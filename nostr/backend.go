@@ -312,7 +312,7 @@ func (b *Backend) processGiftWrap(ctx context.Context, evt *gonostr.Event) {
 	})
 }
 
-var mediaURLRe = regexp.MustCompile(`https?://\S+\.(?:png|jpg|jpeg|gif|webp|pdf|mp3|mp4|wav|ogg|svg|bmp|tiff|zip)(?:\?\S*)?`)
+var mediaURLRe = regexp.MustCompile(`(?i)https?://\S+\.(?:png|jpg|jpeg|gif|webp|pdf|mp3|mp4|wav|ogg|svg|bmp|tiff|zip)(?:\?\S*)?`)
 
 // rewriteMediaURLs finds media URLs in text, downloads them, and rewrites the
 // text with the local file path in the standard attachment format.
@@ -322,15 +322,21 @@ func (b *Backend) rewriteMediaURLs(ctx context.Context, text, conversationID str
 		return text
 	}
 
+	processed := make(map[string]bool, len(urls))
 	for _, rawURL := range urls {
+		if processed[rawURL] {
+			continue
+		}
+
 		localPath, err := downloadURL(ctx, rawURL, b.cfg.SessionBaseDir, conversationID)
 		if err != nil {
 			slog.Warn("nostr: failed to download media URL", "url", rawURL, "error", err)
 			continue
 		}
 
+		processed[rawURL] = true
 		replacement := fmt.Sprintf("[User sent a file (no caption): %s]\nUse the read tool to view it.", localPath)
-		text = strings.Replace(text, rawURL, replacement, 1)
+		text = strings.ReplaceAll(text, rawURL, replacement)
 	}
 
 	return text
