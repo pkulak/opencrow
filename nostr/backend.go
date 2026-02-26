@@ -305,6 +305,7 @@ func (b *Backend) processGiftWrap(ctx context.Context, evt *gonostr.Event) {
 	}
 
 	slog.Info("nostr: received DM", "sender", senderHex, "len", len(rumor.Content))
+	slog.Debug("nostr: received DM content", "sender", senderHex, "content", rumor.Content)
 
 	text := rumor.Content
 

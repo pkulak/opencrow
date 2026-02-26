@@ -110,6 +110,7 @@ func (a *App) handlePrompt(ctx context.Context, msg backend.Message) {
 	}
 
 	slog.Info("sending reply", "conversation", msg.ConversationID, "len", len(reply))
+	slog.Debug("outgoing reply content", "conversation", msg.ConversationID, "content", reply)
 
 	cleanReply, filePaths := extractSendFiles(reply)
 
