@@ -175,10 +175,12 @@ func (b *Backend) SendFile(ctx context.Context, conversationID string, filePath 
 // SetTyping is a no-op on Nostr.
 func (b *Backend) SetTyping(_ context.Context, _ string, _ bool) {}
 
-// ResetConversation clears the active conversation.
-func (b *Backend) ResetConversation(_ context.Context, _ string) {
+// ResetConversation clears the active conversation if it matches conversationID.
+func (b *Backend) ResetConversation(_ context.Context, conversationID string) {
 	b.activeMu.Lock()
-	b.activeConvID = ""
+	if b.activeConvID == conversationID {
+		b.activeConvID = ""
+	}
 	b.activeMu.Unlock()
 }
 

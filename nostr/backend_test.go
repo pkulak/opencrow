@@ -272,6 +272,7 @@ func TestResetConversation(t *testing.T) {
 	botSK := gonostr.Generate()
 
 	userASK := gonostr.Generate()
+	userAPK := userASK.Public()
 
 	userBSK := gonostr.Generate()
 	userBPK := userBSK.Public()
@@ -299,8 +300,8 @@ func TestResetConversation(t *testing.T) {
 	sendTestDM(t, ctx, wsURL, userASK, b.keys.PK, "from A")
 	time.Sleep(300 * time.Millisecond)
 
-	// Reset
-	b.ResetConversation(ctx, "")
+	// Reset A's conversation
+	b.ResetConversation(ctx, userAPK.Hex())
 	time.Sleep(100 * time.Millisecond)
 
 	// B sends — should be accepted now
