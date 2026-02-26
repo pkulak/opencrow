@@ -295,11 +295,13 @@ func (b *Backend) processGiftWrap(ctx context.Context, evt *gonostr.Event) {
 	b.activeMu.Unlock()
 
 	// Update last-seen
+	b.lastSeenMu.Lock()
 	if rumor.CreatedAt > b.lastSeen {
-		b.lastSeenMu.Lock()
 		b.lastSeen = rumor.CreatedAt
 		b.lastSeenMu.Unlock()
 		saveLastSeen(b.cfg.SessionBaseDir, rumor.CreatedAt)
+	} else {
+		b.lastSeenMu.Unlock()
 	}
 
 	slog.Info("nostr: received DM", "sender", senderHex, "len", len(rumor.Content))
