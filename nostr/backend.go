@@ -8,6 +8,7 @@ import (
 	"regexp"
 	"strings"
 	"sync"
+	"time"
 
 	gonostr "fiatjaf.com/nostr"
 	"fiatjaf.com/nostr/keyer"
@@ -40,9 +41,10 @@ type Backend struct {
 	activeMu     sync.Mutex
 	activeConvID string
 
-	// Dedup received events by ID
-	seenMu sync.Mutex
-	seen   map[gonostr.ID]struct{}
+	// Dedup received events by ID; entries older than seenTTL are pruned.
+	seenMu  sync.Mutex
+	seen    map[gonostr.ID]time.Time
+	seenTTL time.Duration
 
 	// Last-seen DM timestamp
 	lastSeenMu sync.Mutex
@@ -60,7 +62,8 @@ func NewBackend(cfg Config, handler backend.MessageHandler) *Backend {
 		keys:    keys,
 		cfg:     cfg,
 		handler: handler,
-		seen:    make(map[gonostr.ID]struct{}),
+		seen:    make(map[gonostr.ID]time.Time),
+		seenTTL: 3 * 24 * time.Hour, // matches the NIP-59 timestamp randomization window
 	}
 }
 
@@ -97,6 +100,9 @@ func (b *Backend) Run(ctx context.Context) error {
 		Since: since,
 	}, gonostr.SubscriptionOptions{})
 
+	// Periodically prune the dedup set so it doesn't grow unbounded.
+	go b.pruneSeenLoop(ctx)
+
 	for ie := range events {
 		if ctx.Err() != nil {
 			break
@@ -106,6 +112,32 @@ func (b *Backend) Run(ctx context.Context) error {
 	}
 
 	return ctx.Err()
+}
+
+// pruneSeenLoop removes entries from the seen map that are older than seenTTL.
+func (b *Backend) pruneSeenLoop(ctx context.Context) {
+	ticker := time.NewTicker(b.seenTTL / 3)
+	defer ticker.Stop()
+
+	for {
+		select {
+		case <-ctx.Done():
+			return
+		case <-ticker.C:
+			b.pruneSeen()
+		}
+	}
+}
+
+func (b *Backend) pruneSeen() {
+	cutoff := time.Now().Add(-b.seenTTL)
+	b.seenMu.Lock()
+	for id, t := range b.seen {
+		if t.Before(cutoff) {
+			delete(b.seen, id)
+		}
+	}
+	b.seenMu.Unlock()
 }
 
 // Stop signals the backend to shut down.
@@ -217,7 +249,7 @@ func (b *Backend) processGiftWrap(ctx context.Context, evt *gonostr.Event) {
 		b.seenMu.Unlock()
 		return
 	}
-	b.seen[evt.ID] = struct{}{}
+	b.seen[evt.ID] = time.Now()
 	b.seenMu.Unlock()
 
 	// Unwrap: gift wrap → seal → rumor
