@@ -2,6 +2,7 @@ package main
 
 import (
 	"context"
+	"fmt"
 	"log/slog"
 	"os"
 	"os/signal"
@@ -52,6 +53,8 @@ func run() int {
 		b, err = createMatrixBackend(cfg, pool, handler)
 	case "nostr":
 		b = createNostrBackend(cfg, handler)
+	default:
+		err = fmt.Errorf("unsupported backend type: %q", cfg.BackendType)
 	}
 
 	if err != nil {
