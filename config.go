@@ -319,7 +319,11 @@ func loadNostrPrivateKey() (string, error) {
 		if prefix != "nsec" {
 			return "", fmt.Errorf("expected nsec prefix, got %s", prefix)
 		}
-		raw = val.(gonostr.SecretKey).Hex()
+		sk, ok := val.(gonostr.SecretKey)
+		if !ok {
+			return "", fmt.Errorf("decoded value is not gonostr.SecretKey: %T", val)
+		}
+		raw = sk.Hex()
 	}
 
 	return raw, nil
@@ -337,7 +341,11 @@ func parseNostrAllowedUsers(s string) (map[string]struct{}, error) {
 			if prefix != "npub" {
 				return nil, fmt.Errorf("expected npub prefix, got %s", prefix)
 			}
-			u = val.(gonostr.PubKey).Hex()
+			pk, ok := val.(gonostr.PubKey)
+			if !ok {
+				return nil, fmt.Errorf("decoded value is not gonostr.PubKey: %T", val)
+			}
+			u = pk.Hex()
 		}
 		users[u] = struct{}{}
 	}
