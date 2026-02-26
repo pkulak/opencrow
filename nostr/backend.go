@@ -151,6 +151,9 @@ func (b *Backend) Stop() {
 
 // Close releases relay connections.
 func (b *Backend) Close() error {
+	if b.pool != nil {
+		b.pool.Close("backend closed")
+	}
 	return nil
 }
 
