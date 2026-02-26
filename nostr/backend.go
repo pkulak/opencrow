@@ -107,6 +107,7 @@ func (b *Backend) Run(ctx context.Context) error {
 		if ctx.Err() != nil {
 			break
 		}
+		slog.Debug("nostr: gift wrap received from relay", "relay", ie.Relay.URL, "event_id", ie.Event.ID.Hex())
 		evt := ie.Event
 		b.processGiftWrap(ctx, &evt)
 	}
@@ -244,13 +245,17 @@ You can include multiple <sendfile> tags in a single response.`
 // processGiftWrap unwraps a kind 1059 event and dispatches to the handler.
 func (b *Backend) processGiftWrap(ctx context.Context, evt *gonostr.Event) {
 	if evt == nil {
+		slog.Debug("nostr: processGiftWrap called with nil event")
 		return
 	}
+
+	slog.Debug("nostr: processing gift wrap", "event_id", evt.ID.Hex(), "event_kind", evt.Kind)
 
 	// Dedup by event ID
 	b.seenMu.Lock()
 	if _, ok := b.seen[evt.ID]; ok {
 		b.seenMu.Unlock()
+		slog.Debug("nostr: dropping duplicate gift wrap", "event_id", evt.ID.Hex())
 		return
 	}
 	b.seen[evt.ID] = time.Now()
@@ -269,6 +274,7 @@ func (b *Backend) processGiftWrap(ctx context.Context, evt *gonostr.Event) {
 
 	senderPK := rumor.PubKey
 	if senderPK == b.keys.PK {
+		slog.Debug("nostr: dropping own message echo", "event_id", evt.ID.Hex())
 		return
 	}
 
