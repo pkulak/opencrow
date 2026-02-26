@@ -115,6 +115,7 @@ func (a *App) handlePrompt(ctx context.Context, msg backend.Message) {
 	cleanReply, filePaths := extractSendFiles(reply)
 
 	for _, fp := range filePaths {
+		slog.Info("sending file", "conversation", msg.ConversationID, "path", fp)
 		if err := a.backend.SendFile(ctx, msg.ConversationID, fp); err != nil {
 			slog.Error("failed to send file", "conversation", msg.ConversationID, "path", fp, "error", err)
 			cleanReply += fmt.Sprintf("\n\n(failed to send file %s: %v)", filepath.Base(fp), err)

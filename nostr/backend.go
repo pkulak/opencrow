@@ -304,8 +304,11 @@ func (b *Backend) processGiftWrap(ctx context.Context, evt *gonostr.Event) {
 		b.lastSeenMu.Unlock()
 	}
 
-	slog.Info("nostr: received DM", "sender", senderHex, "len", len(rumor.Content))
+	slog.Info("nostr: received DM", "sender", senderHex, "len", len(rumor.Content), "tags", len(rumor.Tags))
 	slog.Debug("nostr: received DM content", "sender", senderHex, "content", rumor.Content)
+	for _, tag := range rumor.Tags {
+		slog.Debug("nostr: received DM tag", "sender", senderHex, "tag", tag)
+	}
 
 	text := rumor.Content
 
@@ -341,6 +344,7 @@ func (b *Backend) rewriteMediaURLs(ctx context.Context, text, conversationID str
 			continue
 		}
 
+		slog.Debug("nostr: downloaded media URL", "url", rawURL, "localPath", localPath)
 		processed[rawURL] = true
 		replacement := fmt.Sprintf("[User sent a file (no caption): %s]\nUse the read tool to view it.", localPath)
 		text = strings.ReplaceAll(text, rawURL, replacement)

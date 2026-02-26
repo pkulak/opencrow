@@ -418,4 +418,3 @@ func extractLastAssistantText(messagesRaw json.RawMessage) string {
 
 	return ""
 }
-
