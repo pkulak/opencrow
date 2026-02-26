@@ -52,7 +52,7 @@ func run() int {
 	case "matrix":
 		b, err = createMatrixBackend(cfg, pool, handler)
 	case "nostr":
-		b = createNostrBackend(cfg, handler)
+		b, err = createNostrBackend(cfg, handler)
 	default:
 		err = fmt.Errorf("unsupported backend type: %q", cfg.BackendType)
 	}
@@ -138,7 +138,7 @@ func createMatrixBackend(cfg *Config, pool *PiPool, handler backend.MessageHandl
 	return b, nil
 }
 
-func createNostrBackend(cfg *Config, handler backend.MessageHandler) backend.Backend {
+func createNostrBackend(cfg *Config, handler backend.MessageHandler) (backend.Backend, error) {
 	nostrCfg := nostrbackend.Config{
 		PrivateKey:     cfg.Nostr.PrivateKey,
 		Relays:         cfg.Nostr.Relays,

@@ -353,12 +353,15 @@ func TestLastSeenPersistence(t *testing.T) {
 		mu.Unlock()
 	}
 
-	b := NewBackend(Config{
+	b, err := NewBackend(Config{
 		PrivateKey:     botSK.Hex(),
 		Relays:         []string{wsURL},
 		AllowedUsers:   make(map[string]struct{}),
 		SessionBaseDir: sessionDir,
 	}, handler)
+	if err != nil {
+		t.Fatal(err)
+	}
 
 	ctx, cancel := context.WithTimeout(context.Background(), 5*time.Second)
 	defer cancel()
@@ -409,12 +412,16 @@ func newTestBackendWithHandler(t *testing.T, sk gonostr.SecretKey, relays []stri
 		allowedUsers = make(map[string]struct{})
 	}
 
-	return NewBackend(Config{
+	b, err := NewBackend(Config{
 		PrivateKey:     sk.Hex(),
 		Relays:         relays,
 		AllowedUsers:   allowedUsers,
 		SessionBaseDir: t.TempDir(),
 	}, handler)
+	if err != nil {
+		t.Fatal(err)
+	}
+	return b
 }
 
 // sendTestDM sends a NIP-17 gift-wrapped DM from sender to recipient via the relay.

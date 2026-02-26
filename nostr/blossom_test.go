@@ -29,13 +29,16 @@ func TestSendFile_UploadsToBlossom(t *testing.T) {
 	defer srv.Close()
 
 	botSK := gonostr.Generate()
-	b := NewBackend(Config{
+	b, err := NewBackend(Config{
 		PrivateKey:     botSK.Hex(),
 		Relays:         []string{},
 		BlossomServers: []string{srv.URL},
 		AllowedUsers:   make(map[string]struct{}),
 		SessionBaseDir: t.TempDir(),
 	}, func(context.Context, backend.Message) {})
+	if err != nil {
+		t.Fatal(err)
+	}
 
 	// Create a test file
 	tmpFile := filepath.Join(t.TempDir(), "test.png")
@@ -74,13 +77,16 @@ func TestSendFile_BlossomFallback(t *testing.T) {
 	defer srv2.Close()
 
 	botSK := gonostr.Generate()
-	b := NewBackend(Config{
+	b, err := NewBackend(Config{
 		PrivateKey:     botSK.Hex(),
 		Relays:         []string{},
 		BlossomServers: []string{srv1.URL, srv2.URL},
 		AllowedUsers:   make(map[string]struct{}),
 		SessionBaseDir: t.TempDir(),
 	}, func(context.Context, backend.Message) {})
+	if err != nil {
+		t.Fatal(err)
+	}
 
 	tmpFile := filepath.Join(t.TempDir(), "test.txt")
 	if err := os.WriteFile(tmpFile, []byte("data"), 0o644); err != nil {
@@ -140,13 +146,16 @@ func TestSendFile_AllBlossomsFail(t *testing.T) {
 	defer srv.Close()
 
 	botSK := gonostr.Generate()
-	b := NewBackend(Config{
+	b, err := NewBackend(Config{
 		PrivateKey:     botSK.Hex(),
 		Relays:         []string{},
 		BlossomServers: []string{srv.URL},
 		AllowedUsers:   make(map[string]struct{}),
 		SessionBaseDir: t.TempDir(),
 	}, func(context.Context, backend.Message) {})
+	if err != nil {
+		t.Fatal(err)
+	}
 
 	tmpFile := filepath.Join(t.TempDir(), "test.txt")
 	if err := os.WriteFile(tmpFile, []byte("data"), 0o644); err != nil {
@@ -156,7 +165,7 @@ func TestSendFile_AllBlossomsFail(t *testing.T) {
 	ctx, cancel := context.WithTimeout(context.Background(), 5*time.Second)
 	defer cancel()
 
-	_, err := b.uploadToBlossomImpl(ctx, tmpFile)
+	_, err = b.uploadToBlossomImpl(ctx, tmpFile)
 	if err == nil {
 		t.Fatal("expected error when all servers fail")
 	}

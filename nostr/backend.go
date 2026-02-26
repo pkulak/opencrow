@@ -52,10 +52,10 @@ type Backend struct {
 }
 
 // NewBackend creates a new Nostr backend. The keys are derived from cfg.PrivateKey.
-func NewBackend(cfg Config, handler backend.MessageHandler) *Backend {
+func NewBackend(cfg Config, handler backend.MessageHandler) (*Backend, error) {
 	keys, err := loadKeys(cfg.PrivateKey)
 	if err != nil {
-		slog.Error("nostr: failed to load keys", "error", err)
+		return nil, fmt.Errorf("nostr: failed to load keys: %w", err)
 	}
 
 	return &Backend{
@@ -64,7 +64,7 @@ func NewBackend(cfg Config, handler backend.MessageHandler) *Backend {
 		handler: handler,
 		seen:    make(map[gonostr.ID]time.Time),
 		seenTTL: 3 * 24 * time.Hour, // matches the NIP-59 timestamp randomization window
-	}
+	}, nil
 }
 
 // Run starts the Nostr event loop — subscribes to kind 1059 gift wraps.
