@@ -189,6 +189,11 @@ in
     assertions = [
       {
         assertion =
+          cfg.environment.OPENCROW_BACKEND != "matrix" || cfg.environment.OPENCROW_MATRIX_HOMESERVER != "";
+        message = "OPENCROW_MATRIX_HOMESERVER is required when OPENCROW_BACKEND is matrix.";
+      }
+      {
+        assertion =
           cfg.environment.OPENCROW_BACKEND != "nostr" || cfg.environment.OPENCROW_NOSTR_RELAYS != "";
         message = "OPENCROW_NOSTR_RELAYS is required when OPENCROW_BACKEND is nostr.";
       }
