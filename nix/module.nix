@@ -22,6 +22,7 @@ in
 
     environmentFiles = lib.mkOption {
       type = lib.types.listOf lib.types.path;
+      default = [ ];
       description = ''
         List of environment files containing secrets (on the host).
         Bind-mounted read-only into the container.
@@ -252,13 +253,19 @@ in
             after = [ "network-online.target" ];
             wants = [ "network-online.target" ];
 
-            path = [ opencrowPkg pkgs.bash pkgs.coreutils ] ++ cfg.extraPackages;
+            path = [
+              opencrowPkg
+              pkgs.bash
+              pkgs.coreutils
+            ]
+            ++ cfg.extraPackages;
 
-            environment = cfg.environment;
+            environment = lib.filterAttrs (_: v: v != "") cfg.environment;
 
             serviceConfig = {
-              EnvironmentFile =
-                lib.imap0 (i: _: "/run/secrets/opencrow-envfile-${toString i}") cfg.environmentFiles;
+              EnvironmentFile = lib.imap0 (
+                i: _: "/run/secrets/opencrow-envfile-${toString i}"
+              ) cfg.environmentFiles;
               ExecStart = lib.getExe opencrowPkg;
               Restart = "on-failure";
               RestartSec = 10;
