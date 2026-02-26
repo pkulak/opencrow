@@ -175,6 +175,17 @@ in
             description = "Directory where pi stores its agent configuration and data.";
           };
 
+          OPENCROW_LOG_LEVEL = lib.mkOption {
+            type = lib.types.enum [
+              "debug"
+              "info"
+              "warn"
+              "error"
+            ];
+            default = "info";
+            description = "Log verbosity. Set to 'debug' to log full conversation content.";
+          };
+
           OPENCROW_HEARTBEAT_INTERVAL = lib.mkOption {
             type = lib.types.str;
             default = "";
