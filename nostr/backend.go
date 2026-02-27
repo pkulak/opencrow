@@ -41,14 +41,14 @@ type Backend struct {
 	activeMu     sync.Mutex
 	activeConvID string
 
-	// Dedup received events by ID; entries older than seenTTL are pruned.
-	seenMu  sync.Mutex
-	seen    map[gonostr.ID]time.Time
-	seenTTL time.Duration
+	// Dedup received gift wrap events by ID (in-memory, handles multi-relay duplicates).
+	seenMu       sync.Mutex
+	seenGiftWrap map[gonostr.ID]time.Time
 
-	// Last-seen DM timestamp
-	lastSeenMu sync.Mutex
-	lastSeen   gonostr.Timestamp
+	// Dedup processed rumor IDs (persisted to disk, survives restarts).
+	seenRumorsMu sync.Mutex
+	seenRumors   map[string]time.Time
+	seenTTL      time.Duration
 }
 
 // NewBackend creates a new Nostr backend. The keys are derived from cfg.PrivateKey.
@@ -58,12 +58,15 @@ func NewBackend(cfg Config, handler backend.MessageHandler) (*Backend, error) {
 		return nil, fmt.Errorf("nostr: failed to load keys: %w", err)
 	}
 
+	ttl := 7 * 24 * time.Hour // 7 days — covers NIP-59 randomization window with margin
+
 	return &Backend{
-		keys:    keys,
-		cfg:     cfg,
-		handler: handler,
-		seen:    make(map[gonostr.ID]time.Time),
-		seenTTL: 3 * 24 * time.Hour, // matches the NIP-59 timestamp randomization window
+		keys:         keys,
+		cfg:          cfg,
+		handler:      handler,
+		seenGiftWrap: make(map[gonostr.ID]time.Time),
+		seenRumors:   loadSeenRumors(cfg.SessionBaseDir, ttl),
+		seenTTL:      ttl,
 	}, nil
 }
 
@@ -79,15 +82,9 @@ func (b *Backend) Run(ctx context.Context) error {
 	kr := keyer.NewPlainKeySigner(b.keys.SK)
 	b.kr = kr
 
-	// Load persisted last-seen timestamp
-	b.lastSeen = loadLastSeen(b.cfg.SessionBaseDir)
+	since := sinceFromSeenRumors(b.seenRumors, b.seenTTL)
 
-	since := b.lastSeen - 259200 // 3 days offset for NIP-59 timestamp randomization
-	if since < 0 {
-		since = 0
-	}
-
-	slog.Info("nostr: subscribing to DMs", "pubkey", b.keys.PK.Hex(), "since", since, "relays", b.cfg.Relays)
+	slog.Info("nostr: subscribing to DMs", "pubkey", b.keys.PK.Hex(), "since", since, "seen_rumors", len(b.seenRumors), "relays", b.cfg.Relays)
 
 	ctx, cancel := context.WithCancel(ctx)
 	b.cancelMu.Lock()
@@ -115,9 +112,9 @@ func (b *Backend) Run(ctx context.Context) error {
 	return ctx.Err()
 }
 
-// pruneSeenLoop removes entries from the seen map that are older than seenTTL.
+// pruneSeenLoop prunes stale entries from both dedup sets.
 func (b *Backend) pruneSeenLoop(ctx context.Context) {
-	ticker := time.NewTicker(b.seenTTL / 3)
+	ticker := time.NewTicker(1 * time.Hour)
 	defer ticker.Stop()
 
 	for {
@@ -132,13 +129,23 @@ func (b *Backend) pruneSeenLoop(ctx context.Context) {
 
 func (b *Backend) pruneSeen() {
 	cutoff := time.Now().Add(-b.seenTTL)
+
 	b.seenMu.Lock()
-	for id, t := range b.seen {
+	for id, t := range b.seenGiftWrap {
 		if t.Before(cutoff) {
-			delete(b.seen, id)
+			delete(b.seenGiftWrap, id)
 		}
 	}
 	b.seenMu.Unlock()
+
+	b.seenRumorsMu.Lock()
+	for id, t := range b.seenRumors {
+		if t.Before(cutoff) {
+			delete(b.seenRumors, id)
+		}
+	}
+	saveSeenRumors(b.cfg.SessionBaseDir, b.seenRumors)
+	b.seenRumorsMu.Unlock()
 }
 
 // Stop signals the backend to shut down.
@@ -251,14 +258,14 @@ func (b *Backend) processGiftWrap(ctx context.Context, evt *gonostr.Event) {
 
 	slog.Debug("nostr: processing gift wrap", "event_id", evt.ID.Hex(), "event_kind", evt.Kind)
 
-	// Dedup by event ID
+	// Dedup by gift wrap event ID (in-memory, handles multi-relay duplicates)
 	b.seenMu.Lock()
-	if _, ok := b.seen[evt.ID]; ok {
+	if _, ok := b.seenGiftWrap[evt.ID]; ok {
 		b.seenMu.Unlock()
 		slog.Debug("nostr: dropping duplicate gift wrap", "event_id", evt.ID.Hex())
 		return
 	}
-	b.seen[evt.ID] = time.Now()
+	b.seenGiftWrap[evt.ID] = time.Now()
 	b.seenMu.Unlock()
 
 	// Unwrap: gift wrap → seal → rumor
@@ -271,6 +278,18 @@ func (b *Backend) processGiftWrap(ctx context.Context, evt *gonostr.Event) {
 		slog.Warn("nostr: failed to unwrap gift wrap", "event_id", evt.ID.Hex(), "error", err)
 		return
 	}
+
+	// Dedup by rumor ID (persisted, survives restarts)
+	rumorHex := rumor.ID.Hex()
+	b.seenRumorsMu.Lock()
+	if _, ok := b.seenRumors[rumorHex]; ok {
+		b.seenRumorsMu.Unlock()
+		slog.Debug("nostr: dropping already-processed rumor", "rumor_id", rumorHex, "event_id", evt.ID.Hex())
+		return
+	}
+	b.seenRumors[rumorHex] = time.Now()
+	saveSeenRumors(b.cfg.SessionBaseDir, b.seenRumors)
+	b.seenRumorsMu.Unlock()
 
 	senderPK := rumor.PubKey
 	if senderPK == b.keys.PK {
@@ -299,16 +318,6 @@ func (b *Backend) processGiftWrap(ctx context.Context, evt *gonostr.Event) {
 		return
 	}
 	b.activeMu.Unlock()
-
-	// Update last-seen
-	b.lastSeenMu.Lock()
-	if rumor.CreatedAt > b.lastSeen {
-		b.lastSeen = rumor.CreatedAt
-		b.lastSeenMu.Unlock()
-		saveLastSeen(b.cfg.SessionBaseDir, rumor.CreatedAt)
-	} else {
-		b.lastSeenMu.Unlock()
-	}
 
 	slog.Info("nostr: received DM", "sender", senderHex, "len", len(rumor.Content), "tags", len(rumor.Tags))
 	slog.Debug("nostr: received DM content", "sender", senderHex, "content", rumor.Content)

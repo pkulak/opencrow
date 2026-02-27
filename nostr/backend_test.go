@@ -336,7 +336,7 @@ func TestResetConversation(t *testing.T) {
 	}
 }
 
-func TestLastSeenPersistence(t *testing.T) {
+func TestSeenRumorsPersistence(t *testing.T) {
 	wsURL, cleanup := testutil.StartTestRelay(t)
 	defer cleanup()
 
@@ -391,10 +391,126 @@ func TestLastSeenPersistence(t *testing.T) {
 	cancel()
 	<-runErr
 
-	// Verify .nostr_last_seen was written
-	ts := loadLastSeen(sessionDir)
-	if ts == 0 {
-		t.Fatal("last_seen timestamp is 0")
+	// Verify seen rumors were persisted
+	seen := loadSeenRumors(sessionDir, 7*24*time.Hour)
+	if len(seen) == 0 {
+		t.Fatal("no seen rumors persisted to disk")
+	}
+}
+
+func TestRestartDropsStaleMessages(t *testing.T) {
+	wsURL, cleanup := testutil.StartTestRelay(t)
+	defer cleanup()
+
+	botSK := gonostr.Generate()
+	senderSK := gonostr.Generate()
+	sessionDir := t.TempDir()
+
+	var mu sync.Mutex
+	var received []backend.Message
+
+	handler := func(_ context.Context, msg backend.Message) {
+		mu.Lock()
+		received = append(received, msg)
+		mu.Unlock()
+	}
+
+	// --- First run: receive a message, persist seen rumor IDs ---
+	b1, err := NewBackend(Config{
+		PrivateKey:     botSK.Hex(),
+		Relays:         []string{wsURL},
+		AllowedUsers:   make(map[string]struct{}),
+		SessionBaseDir: sessionDir,
+	}, handler)
+	if err != nil {
+		t.Fatal(err)
+	}
+
+	ctx1, cancel1 := context.WithTimeout(context.Background(), 5*time.Second)
+	defer cancel1()
+
+	runErr1 := make(chan error, 1)
+	go func() { runErr1 <- b1.Run(ctx1) }()
+	time.Sleep(300 * time.Millisecond)
+
+	sendTestDM(t, ctx1, wsURL, senderSK, b1.keys.PK, "old message")
+
+	deadline := time.After(3 * time.Second)
+	for {
+		mu.Lock()
+		n := len(received)
+		mu.Unlock()
+		if n > 0 {
+			break
+		}
+		select {
+		case <-deadline:
+			t.Fatal("timed out waiting for first message")
+		case <-time.After(50 * time.Millisecond):
+		}
+	}
+
+	cancel1()
+	<-runErr1
+
+	mu.Lock()
+	if len(received) != 1 || received[0].Text != "old message" {
+		t.Fatalf("first run: got %d messages, want 1 with 'old message'", len(received))
+	}
+	received = nil
+	mu.Unlock()
+
+	// --- Second run: same sessionDir, "old message" is still on the relay ---
+	// It must NOT be delivered again.
+	b2, err := NewBackend(Config{
+		PrivateKey:     botSK.Hex(),
+		Relays:         []string{wsURL},
+		AllowedUsers:   make(map[string]struct{}),
+		SessionBaseDir: sessionDir,
+	}, handler)
+	if err != nil {
+		t.Fatal(err)
+	}
+
+	ctx2, cancel2 := context.WithTimeout(context.Background(), 5*time.Second)
+	defer cancel2()
+
+	runErr2 := make(chan error, 1)
+	go func() { runErr2 <- b2.Run(ctx2) }()
+	time.Sleep(300 * time.Millisecond)
+
+	// Send a new message — this one should be delivered
+	sendTestDM(t, ctx2, wsURL, senderSK, b2.keys.PK, "new message")
+
+	deadline = time.After(3 * time.Second)
+	for {
+		mu.Lock()
+		n := len(received)
+		mu.Unlock()
+		if n > 0 {
+			break
+		}
+		select {
+		case <-deadline:
+			t.Fatal("timed out waiting for new message")
+		case <-time.After(50 * time.Millisecond):
+		}
+	}
+
+	// Give extra time for any stale duplicates to arrive
+	time.Sleep(500 * time.Millisecond)
+
+	cancel2()
+	<-runErr2
+
+	mu.Lock()
+	defer mu.Unlock()
+
+	if len(received) != 1 {
+		t.Fatalf("second run: got %d messages, want 1", len(received))
+	}
+	if received[0].Text != "new message" {
+		t.Errorf("second run: got %q, want %q", received[0].Text, "new message")
 	}
 }
 
