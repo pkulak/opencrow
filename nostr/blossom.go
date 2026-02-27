@@ -116,6 +116,11 @@ func buildBlossomAuthEvent(hashHex string, keys Keys) (gonostr.Event, error) {
 	return evt, nil
 }
 
+// maxDownloadSize caps the amount of data downloadURL will save to disk.
+// 50 MiB is generous for images and voice memos while preventing abuse from
+// multi-gigabyte payloads that could exhaust disk space or memory.
+const maxDownloadSize = 50 << 20 // 50 MiB
+
 // downloadURL downloads a URL to the per-conversation attachments dir.
 // Returns the local file path.
 func downloadURL(ctx context.Context, rawURL, sessionBaseDir, conversationID string) (string, error) {
@@ -159,8 +164,17 @@ func downloadURL(ctx context.Context, rawURL, sessionBaseDir, conversationID str
 	defer f.Close()
 	destPath := f.Name()
 
-	if _, err := io.Copy(f, resp.Body); err != nil {
+	// Limit download size to prevent disk exhaustion from oversized payloads.
+	limited := io.LimitReader(resp.Body, maxDownloadSize+1)
+	n, err := io.Copy(f, limited)
+	if err != nil {
 		return "", fmt.Errorf("writing file: %w", err)
+	}
+	if n > maxDownloadSize {
+		// Clean up the oversized file before returning the error.
+		f.Close()
+		os.Remove(destPath)
+		return "", fmt.Errorf("download exceeds maximum size of %d bytes", maxDownloadSize)
 	}
 
 	return destPath, nil

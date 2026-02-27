@@ -139,6 +139,43 @@ func TestReceive_URLAttachmentDownload(t *testing.T) {
 	}
 }
 
+func TestDownloadURL_ExceedsMaxSize(t *testing.T) {
+	// Serve a response larger than maxDownloadSize.
+	srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, _ *http.Request) {
+		w.Header().Set("Content-Type", "application/octet-stream")
+		// Write maxDownloadSize + 1 bytes to trigger the limit.
+		buf := make([]byte, 32*1024)
+		written := 0
+		for written <= maxDownloadSize {
+			n := len(buf)
+			if written+n > maxDownloadSize+1 {
+				n = maxDownloadSize + 1 - written
+			}
+			w.Write(buf[:n])
+			written += n
+		}
+	}))
+	defer srv.Close()
+
+	sessionDir := t.TempDir()
+	conversationID := "abcdef1234567890abcdef1234567890abcdef1234567890abcdef1234567890"
+
+	ctx := context.Background()
+	_, err := downloadURL(ctx, srv.URL+"/huge.bin", sessionDir, conversationID)
+	if err == nil {
+		t.Fatal("expected error for oversized download, got nil")
+	}
+	if got := err.Error(); got != "download exceeds maximum size of 52428800 bytes" {
+		t.Errorf("unexpected error: %s", got)
+	}
+
+	// Verify the oversized file was cleaned up.
+	entries, _ := os.ReadDir(filepath.Join(sessionDir, "attachments"))
+	if len(entries) != 0 {
+		t.Errorf("expected attachments dir to be empty after cleanup, got %d files", len(entries))
+	}
+}
+
 func TestSendFile_AllBlossomsFail(t *testing.T) {
 	srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, _ *http.Request) {
 		http.Error(w, "server error", 500)
