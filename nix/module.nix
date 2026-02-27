@@ -285,7 +285,10 @@ in
             ]
             ++ cfg.extraPackages;
 
-            environment = lib.filterAttrs (_: v: v != "") cfg.environment;
+            environment = {
+              HOME = "/var/lib/opencrow";
+            }
+            // lib.filterAttrs (_: v: v != "") cfg.environment;
 
             serviceConfig = {
               EnvironmentFile = lib.imap0 (
