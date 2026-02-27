@@ -49,6 +49,21 @@ in
       '';
     };
 
+    credentialFiles = lib.mkOption {
+      type = lib.types.attrsOf lib.types.path;
+      default = { };
+      description = ''
+        Credential files to pass into the container via systemd-nspawn's
+        --load-credential. Keys are credential names, values are host paths.
+        Inside the container, the opencrow service imports them via
+        ImportCredential and they are available under
+        $CREDENTIALS_DIRECTORY/<name>.
+      '';
+      example = lib.literalExpression ''
+        { "nostr-private-key" = config.clan.core.vars.generators.opencrow.files.nostr-private-key.path; }
+      '';
+    };
+
     extraPackages = lib.mkOption {
       type = lib.types.listOf lib.types.package;
       default = [ ];
@@ -229,9 +244,10 @@ in
         assertion =
           cfg.environment.OPENCROW_BACKEND != "nostr"
           || cfg.environment.OPENCROW_NOSTR_PRIVATE_KEY_FILE != ""
-          # Key may also be provided via environmentFiles
-          || (builtins.length cfg.environmentFiles) > 0;
-        message = "OPENCROW_NOSTR_PRIVATE_KEY_FILE or a private key in environmentFiles is required when OPENCROW_BACKEND is nostr.";
+          # Key may also be provided via environmentFiles or credentialFiles
+          || (builtins.length cfg.environmentFiles) > 0
+          || cfg.credentialFiles != { };
+        message = "OPENCROW_NOSTR_PRIVATE_KEY_FILE, environmentFiles, or credentialFiles is required when OPENCROW_BACKEND is nostr.";
       }
     ];
 
@@ -272,6 +288,10 @@ in
       )
       // cfg.extraBindMounts;
 
+      extraFlags = lib.mapAttrsToList (
+        name: path: "--load-credential=${name}:${toString path}"
+      ) cfg.credentialFiles;
+
       config =
         { pkgs, ... }:
         {
@@ -307,6 +327,7 @@ in
               EnvironmentFile = lib.imap0 (
                 i: _: "/run/secrets/opencrow-envfile-${toString i}"
               ) cfg.environmentFiles;
+              ImportCredential = lib.attrNames cfg.credentialFiles;
               ExecStart = lib.getExe opencrowPkg;
               Restart = "on-failure";
               RestartSec = 10;
