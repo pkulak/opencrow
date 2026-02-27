@@ -302,7 +302,11 @@ in
             };
           };
 
-          environment.systemPackages = [ opencrowPkg ] ++ cfg.extraPackages;
+          environment.systemPackages = [
+            opencrowPkg
+            cfg.piPackage
+          ]
+          ++ cfg.extraPackages;
         };
     };
   };
