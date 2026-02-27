@@ -104,9 +104,5 @@ func sinceFromSeenRumors(seen map[string]time.Time, maxAge time.Duration) gonost
 
 	// Go back maxAge from the oldest entry (or from now if empty)
 	since := oldest.Add(-maxAge)
-	ts := gonostr.Timestamp(since.Unix())
-	if ts < 0 {
-		ts = 0
-	}
-	return ts
+	return max(gonostr.Timestamp(since.Unix()), 0)
 }

@@ -104,7 +104,7 @@ func (b *Backend) Run(ctx context.Context) error {
 		if ctx.Err() != nil {
 			break
 		}
-		slog.Debug("nostr: gift wrap received from relay", "relay", ie.Relay.URL, "event_id", ie.Event.ID.Hex())
+		slog.Debug("nostr: gift wrap received from relay", "relay", ie.Relay.URL, "event_id", ie.ID.Hex())
 		evt := ie.Event
 		b.processGiftWrap(ctx, &evt)
 	}

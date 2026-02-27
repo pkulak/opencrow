@@ -347,6 +347,8 @@ func (b *Backend) handleMembership(ctx context.Context, evt *event.Event) {
 		b.handleInvite(ctx, evt)
 	case event.MembershipLeave, event.MembershipBan:
 		b.handleLeave(ctx, evt, mem)
+	case event.MembershipJoin, event.MembershipKnock:
+		// Intentionally ignored — no action needed for joins or knocks.
 	}
 }
 
@@ -447,6 +449,8 @@ func (b *Backend) handleMessage(ctx context.Context, evt *event.Event) {
 	switch msg.MsgType {
 	case event.MsgText, event.MsgImage, event.MsgFile, event.MsgAudio, event.MsgVideo:
 		// supported
+	case event.MsgEmote, event.MsgNotice, event.MsgLocation, event.MsgVerificationRequest, event.MsgBeeperGallery:
+		return
 	default:
 		return
 	}
@@ -512,14 +516,8 @@ func (b *Backend) handleVerify(ctx context.Context, roomID id.RoomID) {
 }
 
 func (b *Backend) downloadAttachment(ctx context.Context, msg *event.MessageEventContent, roomID string) (string, error) {
-	var urlStr id.ContentURIString
-
-	encrypted := msg.File != nil && msg.File.URL != ""
-	if encrypted {
-		urlStr = msg.File.URL
-	} else if msg.URL != "" {
-		urlStr = msg.URL
-	} else {
+	urlStr, encrypted := attachmentURL(msg)
+	if urlStr == "" {
 		return "", errors.New("message has no media URL")
 	}
 
@@ -528,7 +526,42 @@ func (b *Backend) downloadAttachment(ctx context.Context, msg *event.MessageEven
 		return "", fmt.Errorf("parsing mxc URL: %w", err)
 	}
 
-	downloadDir := filepath.Join(b.cfg.SessionBaseDir, "attachments")
+	destPath, err := attachmentDestPath(b.cfg.SessionBaseDir, msg)
+	if err != nil {
+		return "", err
+	}
+
+	switch {
+	case encrypted:
+		if err := b.downloadEncrypted(ctx, mxcURL, msg, destPath); err != nil {
+			return "", err
+		}
+	default:
+		if err := b.downloadPlain(ctx, mxcURL, destPath); err != nil {
+			return "", err
+		}
+	}
+
+	slog.Info("downloaded attachment", "room", roomID, "path", destPath, "encrypted", encrypted)
+
+	return destPath, nil
+}
+
+// attachmentURL returns the content URI and whether the attachment is encrypted.
+func attachmentURL(msg *event.MessageEventContent) (id.ContentURIString, bool) {
+	switch {
+	case msg.File != nil && msg.File.URL != "":
+		return msg.File.URL, true
+	case msg.URL != "":
+		return msg.URL, false
+	default:
+		return "", false
+	}
+}
+
+// attachmentDestPath builds the local filesystem path for a downloaded attachment.
+func attachmentDestPath(sessionBaseDir string, msg *event.MessageEventContent) (string, error) {
+	downloadDir := filepath.Join(sessionBaseDir, "attachments")
 	if err := os.MkdirAll(downloadDir, 0o755); err != nil {
 		return "", fmt.Errorf("creating attachments dir: %w", err)
 	}
@@ -537,51 +570,57 @@ func (b *Backend) downloadAttachment(ctx context.Context, msg *event.MessageEven
 	if filename == "" {
 		filename = msg.Body
 	}
+
 	if filename == "" {
 		filename = "image.png"
 	}
+
 	filename = filepath.Base(filename)
 
-	destPath := filepath.Join(downloadDir, filename)
+	return filepath.Join(downloadDir, filename), nil
+}
 
-	if encrypted {
-		ciphertext, err := b.client.DownloadBytes(ctx, mxcURL)
-		if err != nil {
-			return "", fmt.Errorf("downloading encrypted media: %w", err)
-		}
-
-		plaintext, err := msg.File.Decrypt(ciphertext)
-		if err != nil {
-			return "", fmt.Errorf("decrypting media: %w", err)
-		}
-
-		if err := os.WriteFile(destPath, plaintext, 0o644); err != nil {
-			return "", fmt.Errorf("writing decrypted file: %w", err)
-		}
-	} else {
-		resp, err := b.client.Download(ctx, mxcURL)
-		if err != nil {
-			return "", fmt.Errorf("downloading from matrix: %w", err)
-		}
-		defer resp.Body.Close()
-
-		if resp.StatusCode != http.StatusOK {
-			return "", fmt.Errorf("download returned status %d", resp.StatusCode)
-		}
-
-		f, err := os.Create(destPath)
-		if err != nil {
-			return "", fmt.Errorf("creating file: %w", err)
-		}
-		defer f.Close()
-
-		if _, err := io.Copy(f, resp.Body); err != nil {
-			return "", fmt.Errorf("writing file: %w", err)
-		}
+// downloadEncrypted downloads and decrypts an encrypted Matrix attachment.
+func (b *Backend) downloadEncrypted(ctx context.Context, mxcURL id.ContentURI, msg *event.MessageEventContent, destPath string) error {
+	ciphertext, err := b.client.DownloadBytes(ctx, mxcURL)
+	if err != nil {
+		return fmt.Errorf("downloading encrypted media: %w", err)
 	}
 
-	slog.Info("downloaded attachment", "room", roomID, "path", destPath, "encrypted", encrypted)
-	return destPath, nil
+	if err := msg.File.DecryptInPlace(ciphertext); err != nil {
+		return fmt.Errorf("decrypting media: %w", err)
+	}
+
+	if err := os.WriteFile(destPath, ciphertext, 0o600); err != nil {
+		return fmt.Errorf("writing decrypted file: %w", err)
+	}
+
+	return nil
+}
+
+// downloadPlain downloads an unencrypted Matrix attachment.
+func (b *Backend) downloadPlain(ctx context.Context, mxcURL id.ContentURI, destPath string) error {
+	resp, err := b.client.Download(ctx, mxcURL)
+	if err != nil {
+		return fmt.Errorf("downloading from matrix: %w", err)
+	}
+	defer resp.Body.Close()
+
+	if resp.StatusCode != http.StatusOK {
+		return fmt.Errorf("download returned status %d", resp.StatusCode)
+	}
+
+	f, err := os.Create(destPath)
+	if err != nil {
+		return fmt.Errorf("creating file: %w", err)
+	}
+	defer f.Close()
+
+	if _, err := io.Copy(f, resp.Body); err != nil {
+		return fmt.Errorf("writing file: %w", err)
+	}
+
+	return nil
 }
 
 func lastNewline(s string) int {
