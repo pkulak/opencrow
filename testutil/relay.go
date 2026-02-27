@@ -17,7 +17,9 @@ func StartTestRelay(t *testing.T) (url string, cleanup func()) {
 	relay := khatru.NewRelay()
 
 	store := &slicestore.SliceStore{}
-	store.Init()
+	if err := store.Init(); err != nil {
+		t.Fatalf("initializing slice store: %v", err)
+	}
 
 	relay.UseEventstore(store, 500)
 

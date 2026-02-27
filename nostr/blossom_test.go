@@ -24,7 +24,7 @@ func TestSendFile_UploadsToBlossom(t *testing.T) {
 		}
 		body, _ := io.ReadAll(r.Body)
 		receivedBody = body
-		json.NewEncoder(w).Encode(map[string]string{"url": "https://blossom.example.com/abc123"})
+		_ = json.NewEncoder(w).Encode(map[string]string{"url": "https://blossom.example.com/abc123"})
 	}))
 	defer srv.Close()
 
@@ -71,8 +71,8 @@ func TestSendFile_BlossomFallback(t *testing.T) {
 
 	// Second server succeeds
 	srv2 := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
-		io.ReadAll(r.Body)
-		json.NewEncoder(w).Encode(map[string]string{"url": "https://blossom2.example.com/def456"})
+		_, _ = io.ReadAll(r.Body)
+		_ = json.NewEncoder(w).Encode(map[string]string{"url": "https://blossom2.example.com/def456"})
 	}))
 	defer srv2.Close()
 
@@ -110,7 +110,7 @@ func TestReceive_URLAttachmentDownload(t *testing.T) {
 	// Start a test HTTP server serving an image
 	srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, _ *http.Request) {
 		w.Header().Set("Content-Type", "image/png")
-		w.Write([]byte("fake png data"))
+		_, _ = w.Write([]byte("fake png data"))
 	}))
 	defer srv.Close()
 
@@ -151,7 +151,7 @@ func TestDownloadURL_ExceedsMaxSize(t *testing.T) {
 			if written+n > maxDownloadSize+1 {
 				n = maxDownloadSize + 1 - written
 			}
-			w.Write(buf[:n])
+			_, _ = w.Write(buf[:n])
 			written += n
 		}
 	}))

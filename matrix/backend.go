@@ -223,7 +223,9 @@ func (b *Backend) SetTyping(ctx context.Context, conversationID string, typing b
 	if !typing {
 		timeout = 0
 	}
-	b.client.UserTyping(ctx, id.RoomID(conversationID), typing, timeout)
+	if _, err := b.client.UserTyping(ctx, id.RoomID(conversationID), typing, timeout); err != nil {
+		slog.Warn("failed to set typing indicator", "room", conversationID, "error", err)
+	}
 }
 
 // ResetConversation clears the active room tracking.
