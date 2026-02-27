@@ -398,6 +398,56 @@ func (b *Backend) sendDM(ctx context.Context, kr gonostr.Keyer, pool *gonostr.Po
 	}
 }
 
+// sendReaction sends a NIP-25 kind 7 reaction gift-wrapped via NIP-59 to
+// acknowledge receipt of an incoming DM. The reaction references the original
+// rumor by its event ID so the sender's client can attach it to the right message.
+func (b *Backend) sendReaction(ctx context.Context, rumorID gonostr.ID, recipientPK gonostr.PubKey) {
+	rumor := gonostr.Event{
+		Kind:      gonostr.KindReaction,
+		Content:   "👍",
+		CreatedAt: gonostr.Now(),
+		PubKey:    b.keys.PK,
+		Tags: gonostr.Tags{
+			{"e", rumorID.Hex()},
+			{"p", recipientPK.Hex()},
+			{"k", "14"},
+		},
+	}
+	rumor.ID = rumor.GetID()
+
+	// Gift-wrap to recipient.
+	toThem, err := nip59.GiftWrap(
+		rumor,
+		recipientPK,
+		func(s string) (string, error) { return b.kr.Encrypt(ctx, s, recipientPK) },
+		func(e *gonostr.Event) error { return b.kr.SignEvent(ctx, e) },
+		nil,
+	)
+	if err != nil {
+		slog.Warn("nostr: failed to gift-wrap reaction", "recipient", recipientPK.Hex(), "error", err)
+		return
+	}
+
+	// Publish to recipient's DM relays (fallback to our DM relays).
+	theirRelays := nip17.GetDMRelays(ctx, recipientPK, b.pool, b.cfg.Relays)
+	if len(theirRelays) == 0 {
+		theirRelays = b.cfg.DMRelays
+	}
+
+	for _, relayURL := range theirRelays {
+		r, err := b.pool.EnsureRelay(relayURL)
+		if err != nil {
+			slog.Warn("nostr: failed to connect for reaction", "relay", relayURL, "error", err)
+			continue
+		}
+		if err := r.Publish(ctx, toThem); err != nil {
+			slog.Warn("nostr: failed to publish reaction", "relay", relayURL, "error", err)
+		} else {
+			slog.Debug("nostr: sent reaction ack", "recipient", recipientPK.Hex(), "relay", relayURL, "rumor_id", rumorID.Hex())
+		}
+	}
+}
+
 // processGiftWrap unwraps a kind 1059 event and dispatches to the handler.
 func (b *Backend) processGiftWrap(ctx context.Context, evt *gonostr.Event) {
 	if evt == nil {
@@ -431,6 +481,9 @@ func (b *Backend) processGiftWrap(ctx context.Context, evt *gonostr.Event) {
 	}
 
 	slog.Info("nostr: received DM", "sender", senderHex, "len", len(rumor.Content), "tags", len(rumor.Tags))
+
+	// Send a 👍 reaction to acknowledge receipt before processing.
+	go b.sendReaction(ctx, rumor.ID, rumor.PubKey)
 
 	text := b.rewriteMediaURLs(ctx, rumor.Content, senderHex)
 

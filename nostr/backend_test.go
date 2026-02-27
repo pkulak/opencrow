@@ -392,6 +392,164 @@ func TestRun_SubscribesAllowedUserDMRelays(t *testing.T) {
 	}
 }
 
+func TestSendReaction_PublishesGiftWrappedReaction(t *testing.T) {
+	t.Parallel()
+
+	wsURL, cleanup := testutil.StartTestRelay(t)
+	defer cleanup()
+
+	botSK := gonostr.Generate()
+	senderSK := gonostr.Generate()
+
+	c := &messageCollector{}
+	b := newTestBackendWithHandler(t, botSK, []string{wsURL}, nil, c.handler)
+
+	ctx, cancel := context.WithTimeout(context.Background(), 5*time.Second)
+	defer cancel()
+
+	runErr := runBackendAsync(ctx, b)
+	time.Sleep(300 * time.Millisecond)
+
+	sendTestDM(ctx, t, wsURL, senderSK, b.keys.PK, "hello bot")
+	waitForMessages(t, c, 1)
+
+	// Give the async reaction goroutine time to publish.
+	time.Sleep(500 * time.Millisecond)
+
+	cancel()
+	<-runErr
+
+	// Fetch all gift wraps from the relay and find the reaction.
+	fetchCtx, fetchCancel := context.WithTimeout(context.Background(), 5*time.Second)
+	defer fetchCancel()
+
+	pool := gonostr.NewPool(gonostr.PoolOptions{})
+	defer pool.Close("test done")
+
+	events := pool.FetchMany(fetchCtx, []string{wsURL}, gonostr.Filter{
+		Kinds: []gonostr.Kind{gonostr.KindGiftWrap},
+	}, gonostr.SubscriptionOptions{})
+
+	senderKr := keyer.NewPlainKeySigner(senderSK)
+
+	var foundReaction bool
+	for ie := range events {
+		rumor, err := nip59.GiftUnwrap(ie.Event,
+			func(otherpubkey gonostr.PubKey, ciphertext string) (string, error) {
+				return senderKr.Decrypt(fetchCtx, ciphertext, otherpubkey)
+			},
+		)
+		if err != nil {
+			continue
+		}
+		if rumor.Kind != gonostr.KindReaction {
+			continue
+		}
+
+		foundReaction = true
+
+		if rumor.Content != "👍" {
+			t.Errorf("reaction content = %q, want %q", rumor.Content, "👍")
+		}
+		if rumor.PubKey != botSK.Public() {
+			t.Errorf("reaction pubkey = %s, want %s", rumor.PubKey, botSK.Public())
+		}
+
+		// Verify e tag references the original DM rumor.
+		var hasETag, hasPTag, hasKTag bool
+		for _, tag := range rumor.Tags {
+			if len(tag) >= 2 {
+				switch tag[0] {
+				case "e":
+					hasETag = true
+				case "p":
+					if tag[1] == senderSK.Public().Hex() {
+						hasPTag = true
+					} else {
+						t.Errorf("p tag = %q, want %q", tag[1], senderSK.Public().Hex())
+					}
+				case "k":
+					if tag[1] == "14" {
+						hasKTag = true
+					} else {
+						t.Errorf("k tag = %q, want %q", tag[1], "14")
+					}
+				}
+			}
+		}
+		if !hasETag {
+			t.Error("reaction missing e tag")
+		}
+		if !hasPTag {
+			t.Error("reaction missing p tag")
+		}
+		if !hasKTag {
+			t.Error("reaction missing k tag")
+		}
+
+		break
+	}
+
+	if !foundReaction {
+		t.Fatal("no reaction gift wrap found on relay")
+	}
+}
+
+func TestSendReaction_DisallowedUserNoReaction(t *testing.T) {
+	t.Parallel()
+
+	wsURL, cleanup := testutil.StartTestRelay(t)
+	defer cleanup()
+
+	botSK := gonostr.Generate()
+	allowedSK := gonostr.Generate()
+	disallowedSK := gonostr.Generate()
+
+	c := &messageCollector{}
+	allowedUsers := map[string]struct{}{allowedSK.Public().Hex(): {}}
+	b := newTestBackendWithHandler(t, botSK, []string{wsURL}, allowedUsers, c.handler)
+
+	ctx, cancel := context.WithTimeout(context.Background(), 5*time.Second)
+	defer cancel()
+
+	runErr := runBackendAsync(ctx, b)
+	time.Sleep(300 * time.Millisecond)
+
+	// Send DM from disallowed user — should not trigger a reaction.
+	sendTestDM(ctx, t, wsURL, disallowedSK, b.keys.PK, "should be dropped")
+	time.Sleep(500 * time.Millisecond)
+
+	cancel()
+	<-runErr
+
+	// Fetch all gift wraps and try to unwrap as the disallowed user.
+	fetchCtx, fetchCancel := context.WithTimeout(context.Background(), 5*time.Second)
+	defer fetchCancel()
+
+	pool := gonostr.NewPool(gonostr.PoolOptions{})
+	defer pool.Close("test done")
+
+	events := pool.FetchMany(fetchCtx, []string{wsURL}, gonostr.Filter{
+		Kinds: []gonostr.Kind{gonostr.KindGiftWrap},
+	}, gonostr.SubscriptionOptions{})
+
+	disallowedKr := keyer.NewPlainKeySigner(disallowedSK)
+
+	for ie := range events {
+		rumor, err := nip59.GiftUnwrap(ie.Event,
+			func(otherpubkey gonostr.PubKey, ciphertext string) (string, error) {
+				return disallowedKr.Decrypt(fetchCtx, ciphertext, otherpubkey)
+			},
+		)
+		if err != nil {
+			continue
+		}
+		if rumor.Kind == gonostr.KindReaction {
+			t.Fatal("reaction was sent for disallowed user, expected none")
+		}
+	}
+}
+
 // --- test helpers ---
 
 // messageCollector collects backend messages in a thread-safe way.
