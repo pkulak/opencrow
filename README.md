@@ -101,29 +101,61 @@ appear in a single response.
 
 *Either `OPENCROW_NOSTR_PRIVATE_KEY` or `OPENCROW_NOSTR_PRIVATE_KEY_FILE` is required.
 
-## Authentication
+## Secrets and authentication
+
+### Nostr private key
+
+Pass secret files into the container using the `credentialFiles` option. Files
+are loaded via systemd-nspawn's `--load-credential` on the host and imported by
+the inner service via `ImportCredential`. They are available to opencrow under
+`$CREDENTIALS_DIRECTORY/<name>`.
+
+```nix
+services.opencrow = {
+  credentialFiles = {
+    "nostr-private-key" = /path/to/nostr-private-key;
+  };
+  environment.OPENCROW_NOSTR_PRIVATE_KEY_FILE = "%d/nostr-private-key";
+};
+```
+
+`%d` is the systemd specifier for `$CREDENTIALS_DIRECTORY` and works in
+`Environment=` directives.
+
+### LLM provider credentials
 
 Pi needs credentials for your LLM provider. There are two ways to set this up:
 
-**Option A: Environment variable** — set `ANTHROPIC_API_KEY` (or the
-equivalent for your provider) in an environment file and pass it via the
-`environmentFile` option in the NixOS module.
+**Option A: API key** — set `ANTHROPIC_API_KEY` (or the equivalent for your
+provider) in an environment file and pass it via the `environmentFiles` option.
+API keys don't expire and are the simplest approach.
 
 **Option B: OAuth (Claude Pro/Max)** — pi supports OAuth against your Anthropic
 account, so you can use your subscription instead of API credits. The initial
-login is interactive and needs a browser, but subsequent token refreshes happen
-automatically.
+login is interactive, but subsequent token refreshes happen automatically
+because pi persists the tokens in `PI_CODING_AGENT_DIR`.
 
-To set it up, run pi once interactively and complete the OAuth flow:
+The NixOS module provides an `opencrow-pi` wrapper on the host that shells into
+the container as the `opencrow` user with the correct environment:
 
 ```
-sudo  nixos-container root-login opencrow
-PI_CODING_AGENT_DIR=/var/lib/opencrow/pi-agent pi
-# Then run /login in pi and complete OAuth
+sudo opencrow-pi auth login
 ```
 
 The refresh token persists across restarts — you only need to do this once
 (unless the token gets revoked).
+
+### Environment files
+
+For secrets that are plain key=value pairs (e.g. API keys), use
+`environmentFiles`. These are bind-mounted read-only into the container and
+loaded by systemd's `EnvironmentFile=` directive before the service starts:
+
+```nix
+services.opencrow.environmentFiles = [
+  /run/secrets/opencrow-env  # contains ANTHROPIC_API_KEY=sk-...
+];
+```
 
 ## Skills
 
