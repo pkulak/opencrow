@@ -3,6 +3,7 @@ package main
 import (
 	"bufio"
 	"context"
+	"fmt"
 	"log/slog"
 	"os"
 	"path/filepath"
@@ -58,6 +59,7 @@ func (t *TriggerPipeManager) Start(ctx context.Context) {
 			select {
 			case <-ctx.Done():
 				t.stopAll()
+
 				return
 			case <-ticker.C:
 				t.syncReaders(ctx)
@@ -79,6 +81,7 @@ func (t *TriggerPipeManager) StartRoom(ctx context.Context, roomID string) {
 
 	if err := ensureFIFO(pipePath); err != nil {
 		slog.Warn("trigger: failed to ensure FIFO", "room", roomID, "path", pipePath, "error", err)
+
 		return
 	}
 
@@ -141,6 +144,7 @@ func (t *TriggerPipeManager) readLoop(ctx context.Context, roomID, pipePath stri
 	f, err := os.OpenFile(pipePath, os.O_RDWR, 0)
 	if err != nil {
 		slog.Error("trigger: failed to open FIFO", "room", roomID, "path", pipePath, "error", err)
+
 		return
 	}
 	defer f.Close()
@@ -180,6 +184,7 @@ func (t *TriggerPipeManager) processTrigger(ctx context.Context, roomID, content
 	pi, err := t.pool.Get(ctx, roomID)
 	if err != nil {
 		slog.Error("trigger: failed to get pi process", "room", roomID, "error", err)
+
 		return
 	}
 
@@ -189,16 +194,19 @@ func (t *TriggerPipeManager) processTrigger(ctx context.Context, roomID, content
 	if err != nil {
 		slog.Error("trigger: pi prompt failed", "room", roomID, "error", err)
 		t.pool.Remove(roomID)
+
 		return
 	}
 
 	if containsHeartbeatOK(reply) {
 		slog.Info("trigger: HEARTBEAT_OK, suppressing", "room", roomID)
+
 		return
 	}
 
 	if reply == "" {
 		slog.Info("trigger: empty response, suppressing", "room", roomID)
+
 		return
 	}
 
@@ -214,7 +222,7 @@ func TriggerPipePath(sessionDir string) string {
 // If a non-FIFO file exists at the path, it is replaced.
 func ensureFIFO(path string) error {
 	if err := os.MkdirAll(filepath.Dir(path), 0o755); err != nil {
-		return err
+		return fmt.Errorf("creating FIFO parent dir: %w", err)
 	}
 
 	info, err := os.Lstat(path)
@@ -225,13 +233,17 @@ func ensureFIFO(path string) error {
 		}
 		// Not a FIFO, remove it
 		if err := os.Remove(path); err != nil {
-			return err
+			return fmt.Errorf("removing non-FIFO at %s: %w", path, err)
 		}
 	} else if !os.IsNotExist(err) {
-		return err
+		return fmt.Errorf("checking FIFO at %s: %w", path, err)
 	}
 
-	return syscall.Mkfifo(path, 0o644)
+	if err := syscall.Mkfifo(path, 0o644); err != nil {
+		return fmt.Errorf("creating FIFO at %s: %w", path, err)
+	}
+
+	return nil
 }
 
 func buildTriggerPrompt(basePrompt, content string) string {

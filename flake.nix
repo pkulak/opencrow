@@ -41,6 +41,19 @@
         (treefmt-nix.lib.evalModule pkgs ./nix/treefmt.nix).config.build.wrapper
       );
 
+      devShells = forAllSystems (
+        system:
+        let
+          pkgs = nixpkgs.legacyPackages.${system};
+        in
+        {
+          default = pkgs.mkShell {
+            inputsFrom = [ self.packages.${system}.opencrow ];
+            packages = [ pkgs.golangci-lint ];
+          };
+        }
+      );
+
       checks = forAllSystems (
         system:
         let

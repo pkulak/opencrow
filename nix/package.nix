@@ -1,12 +1,30 @@
 {
+  lib,
   buildGoModule,
 }:
 buildGoModule {
   pname = "opencrow";
   version = "0.3.0";
-  src = ./..;
-  vendorHash = "sha256-sIircnDhd0cmsq+rmR0FxZDGms4NKuHqQLzp4CMxBeU=";
+  src = lib.fileset.toSource {
+    root = ./..;
+    fileset = lib.fileset.unions [
+      ./../go.mod
+      ./../go.sum
+      (lib.fileset.fileFilter (file: file.hasExt "go") ./..)
+      ./../.golangci.yml
+      ./../skills
+      ./../SOUL.md
+    ];
+  };
+  vendorHash = "sha256-WZ70HW3c4iGg5hpfYdIenKBaPFni7IwPhizakXhzj9Q=";
   tags = [ "goolm" ];
+
+  # buildGoModule only passes `tags` to `go install`, not to GOFLAGS,
+  # so `nix develop` doesn't get them. Also replace -mod=vendor with
+  # -mod=mod since we don't vendor locally.
+  shellHook = ''
+    export GOFLAGS="-mod=mod -trimpath -tags=goolm"
+  '';
 
   postInstall = ''
     mkdir -p $out/share/opencrow
@@ -15,7 +33,7 @@ buildGoModule {
   '';
 
   meta = {
-    description = "Matrix bot bridging messages to an AI coding agent via pi RPC";
+    description = "Messaging bot (Matrix/Nostr) bridging messages to an AI coding agent via pi RPC";
     homepage = "https://github.com/pinpox/opencrow";
     mainProgram = "opencrow";
   };
