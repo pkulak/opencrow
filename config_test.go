@@ -90,6 +90,7 @@ func TestNostrConfig_RelayParsing(t *testing.T) {
 	if len(cfg.Nostr.Relays) != len(want) {
 		t.Fatalf("got %d relays, want %d", len(cfg.Nostr.Relays), len(want))
 	}
+
 	for i, r := range cfg.Nostr.Relays {
 		if r != want[i] {
 			t.Errorf("relay[%d] = %q, want %q", i, r, want[i])
@@ -142,6 +143,7 @@ func TestNostrConfig_BlossomServers(t *testing.T) {
 	if len(cfg.Nostr.BlossomServers) != len(want) {
 		t.Fatalf("got %d blossom servers, want %d", len(cfg.Nostr.BlossomServers), len(want))
 	}
+
 	for i, s := range cfg.Nostr.BlossomServers {
 		if s != want[i] {
 			t.Errorf("blossom[%d] = %q, want %q", i, s, want[i])

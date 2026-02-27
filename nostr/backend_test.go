@@ -46,6 +46,7 @@ func TestSendMessage_PublishesGiftWrap(t *testing.T) {
 	}, gonostr.SubscriptionOptions{})
 
 	var found bool
+
 	for ie := range events {
 		evt := ie.Event
 		if evt.Kind != gonostr.KindGiftWrap {
@@ -67,13 +68,17 @@ func TestSendMessage_PublishesGiftWrap(t *testing.T) {
 		if rumor.Kind != gonostr.KindDirectMessage {
 			t.Errorf("rumor kind = %d, want %d", rumor.Kind, gonostr.KindDirectMessage)
 		}
+
 		if rumor.Content != "hello from bot" {
 			t.Errorf("rumor content = %q, want %q", rumor.Content, "hello from bot")
 		}
+
 		if rumor.PubKey != botPK {
 			t.Errorf("rumor pubkey = %s, want %s", rumor.PubKey, botPK)
 		}
+
 		found = true
+
 		break
 	}
 
@@ -91,11 +96,14 @@ func TestRun_ReceivesDM(t *testing.T) {
 	senderSK := gonostr.Generate()
 	senderPK := senderSK.Public()
 
-	var received []backend.Message
-	var mu sync.Mutex
+	var (
+		received []backend.Message
+		mu       sync.Mutex
+	)
 
 	handler := func(_ context.Context, msg backend.Message) {
 		mu.Lock()
+
 		received = append(received, msg)
 		mu.Unlock()
 	}
@@ -106,6 +114,7 @@ func TestRun_ReceivesDM(t *testing.T) {
 	defer cancel()
 
 	runErr := make(chan error, 1)
+
 	go func() { runErr <- b.Run(ctx) }()
 
 	time.Sleep(300 * time.Millisecond)
@@ -113,13 +122,16 @@ func TestRun_ReceivesDM(t *testing.T) {
 	sendTestDM(t, ctx, wsURL, senderSK, b.keys.PK, "hello bot")
 
 	deadline := time.After(3 * time.Second)
+
 	for {
 		mu.Lock()
 		n := len(received)
 		mu.Unlock()
+
 		if n > 0 {
 			break
 		}
+
 		select {
 		case <-deadline:
 			t.Fatal("timed out waiting for handler to be called")
@@ -136,9 +148,11 @@ func TestRun_ReceivesDM(t *testing.T) {
 	if len(received) != 1 {
 		t.Fatalf("received %d messages, want 1", len(received))
 	}
+
 	if received[0].ConversationID != senderPK.Hex() {
 		t.Errorf("ConversationID = %q, want %q", received[0].ConversationID, senderPK.Hex())
 	}
+
 	if received[0].Text != "hello bot" {
 		t.Errorf("Text = %q, want %q", received[0].Text, "hello bot")
 	}
@@ -155,11 +169,14 @@ func TestRun_DropsDisallowedUser(t *testing.T) {
 
 	disallowedSK := gonostr.Generate()
 
-	var received []backend.Message
-	var mu sync.Mutex
+	var (
+		received []backend.Message
+		mu       sync.Mutex
+	)
 
 	handler := func(_ context.Context, msg backend.Message) {
 		mu.Lock()
+
 		received = append(received, msg)
 		mu.Unlock()
 	}
@@ -171,6 +188,7 @@ func TestRun_DropsDisallowedUser(t *testing.T) {
 	defer cancel()
 
 	runErr := make(chan error, 1)
+
 	go func() { runErr <- b.Run(ctx) }()
 
 	time.Sleep(300 * time.Millisecond)
@@ -183,13 +201,16 @@ func TestRun_DropsDisallowedUser(t *testing.T) {
 	sendTestDM(t, ctx, wsURL, allowedSK, b.keys.PK, "should be received")
 
 	deadline := time.After(3 * time.Second)
+
 	for {
 		mu.Lock()
 		n := len(received)
 		mu.Unlock()
+
 		if n > 0 {
 			break
 		}
+
 		select {
 		case <-deadline:
 			t.Fatal("timed out waiting for allowed message")
@@ -208,6 +229,7 @@ func TestRun_DropsDisallowedUser(t *testing.T) {
 	if len(received) != 1 {
 		t.Fatalf("received %d messages, want 1", len(received))
 	}
+
 	if received[0].Text != "should be received" {
 		t.Errorf("Text = %q, want %q", received[0].Text, "should be received")
 	}
@@ -224,11 +246,14 @@ func TestSingleActiveConversation(t *testing.T) {
 
 	userBSK := gonostr.Generate()
 
-	var received []backend.Message
-	var mu sync.Mutex
+	var (
+		received []backend.Message
+		mu       sync.Mutex
+	)
 
 	handler := func(_ context.Context, msg backend.Message) {
 		mu.Lock()
+
 		received = append(received, msg)
 		mu.Unlock()
 	}
@@ -239,6 +264,7 @@ func TestSingleActiveConversation(t *testing.T) {
 	defer cancel()
 
 	runErr := make(chan error, 1)
+
 	go func() { runErr <- b.Run(ctx) }()
 
 	time.Sleep(300 * time.Millisecond)
@@ -260,6 +286,7 @@ func TestSingleActiveConversation(t *testing.T) {
 	if len(received) != 1 {
 		t.Fatalf("received %d messages, want 1", len(received))
 	}
+
 	if received[0].ConversationID != userAPK.Hex() {
 		t.Errorf("ConversationID = %q, want %q", received[0].ConversationID, userAPK.Hex())
 	}
@@ -277,11 +304,14 @@ func TestResetConversation(t *testing.T) {
 	userBSK := gonostr.Generate()
 	userBPK := userBSK.Public()
 
-	var received []backend.Message
-	var mu sync.Mutex
+	var (
+		received []backend.Message
+		mu       sync.Mutex
+	)
 
 	handler := func(_ context.Context, msg backend.Message) {
 		mu.Lock()
+
 		received = append(received, msg)
 		mu.Unlock()
 	}
@@ -292,6 +322,7 @@ func TestResetConversation(t *testing.T) {
 	defer cancel()
 
 	runErr := make(chan error, 1)
+
 	go func() { runErr <- b.Run(ctx) }()
 
 	time.Sleep(300 * time.Millisecond)
@@ -308,13 +339,16 @@ func TestResetConversation(t *testing.T) {
 	sendTestDM(t, ctx, wsURL, userBSK, b.keys.PK, "from B")
 
 	deadline := time.After(3 * time.Second)
+
 	for {
 		mu.Lock()
 		n := len(received)
 		mu.Unlock()
+
 		if n >= 2 {
 			break
 		}
+
 		select {
 		case <-deadline:
 			t.Fatal("timed out waiting for second message")
@@ -331,6 +365,7 @@ func TestResetConversation(t *testing.T) {
 	if len(received) != 2 {
 		t.Fatalf("received %d messages, want 2", len(received))
 	}
+
 	if received[1].ConversationID != userBPK.Hex() {
 		t.Errorf("second message ConversationID = %q, want %q", received[1].ConversationID, userBPK.Hex())
 	}
@@ -344,11 +379,14 @@ func TestSeenRumorsPersistence(t *testing.T) {
 	senderSK := gonostr.Generate()
 	sessionDir := t.TempDir()
 
-	var mu sync.Mutex
-	var received []backend.Message
+	var (
+		mu       sync.Mutex
+		received []backend.Message
+	)
 
 	handler := func(_ context.Context, msg backend.Message) {
 		mu.Lock()
+
 		received = append(received, msg)
 		mu.Unlock()
 	}
@@ -367,6 +405,7 @@ func TestSeenRumorsPersistence(t *testing.T) {
 	defer cancel()
 
 	runErr := make(chan error, 1)
+
 	go func() { runErr <- b.Run(ctx) }()
 
 	time.Sleep(300 * time.Millisecond)
@@ -374,13 +413,16 @@ func TestSeenRumorsPersistence(t *testing.T) {
 	sendTestDM(t, ctx, wsURL, senderSK, b.keys.PK, "first message")
 
 	deadline := time.After(3 * time.Second)
+
 	for {
 		mu.Lock()
 		n := len(received)
 		mu.Unlock()
+
 		if n > 0 {
 			break
 		}
+
 		select {
 		case <-deadline:
 			t.Fatal("timed out")
@@ -406,11 +448,14 @@ func TestRestartDropsStaleMessages(t *testing.T) {
 	senderSK := gonostr.Generate()
 	sessionDir := t.TempDir()
 
-	var mu sync.Mutex
-	var received []backend.Message
+	var (
+		mu       sync.Mutex
+		received []backend.Message
+	)
 
 	handler := func(_ context.Context, msg backend.Message) {
 		mu.Lock()
+
 		received = append(received, msg)
 		mu.Unlock()
 	}
@@ -430,19 +475,24 @@ func TestRestartDropsStaleMessages(t *testing.T) {
 	defer cancel1()
 
 	runErr1 := make(chan error, 1)
+
 	go func() { runErr1 <- b1.Run(ctx1) }()
+
 	time.Sleep(300 * time.Millisecond)
 
 	sendTestDM(t, ctx1, wsURL, senderSK, b1.keys.PK, "old message")
 
 	deadline := time.After(3 * time.Second)
+
 	for {
 		mu.Lock()
 		n := len(received)
 		mu.Unlock()
+
 		if n > 0 {
 			break
 		}
+
 		select {
 		case <-deadline:
 			t.Fatal("timed out waiting for first message")
@@ -457,6 +507,7 @@ func TestRestartDropsStaleMessages(t *testing.T) {
 	if len(received) != 1 || received[0].Text != "old message" {
 		t.Fatalf("first run: got %d messages, want 1 with 'old message'", len(received))
 	}
+
 	received = nil
 	mu.Unlock()
 
@@ -476,20 +527,25 @@ func TestRestartDropsStaleMessages(t *testing.T) {
 	defer cancel2()
 
 	runErr2 := make(chan error, 1)
+
 	go func() { runErr2 <- b2.Run(ctx2) }()
+
 	time.Sleep(300 * time.Millisecond)
 
 	// Send a new message — this one should be delivered
 	sendTestDM(t, ctx2, wsURL, senderSK, b2.keys.PK, "new message")
 
 	deadline = time.After(3 * time.Second)
+
 	for {
 		mu.Lock()
 		n := len(received)
 		mu.Unlock()
+
 		if n > 0 {
 			break
 		}
+
 		select {
 		case <-deadline:
 			t.Fatal("timed out waiting for new message")
@@ -509,6 +565,7 @@ func TestRestartDropsStaleMessages(t *testing.T) {
 	if len(received) != 1 {
 		t.Fatalf("second run: got %d messages, want 1", len(received))
 	}
+
 	if received[0].Text != "new message" {
 		t.Errorf("second run: got %q, want %q", received[0].Text, "new message")
 	}
@@ -518,6 +575,7 @@ func TestRestartDropsStaleMessages(t *testing.T) {
 
 func newTestBackend(t *testing.T, sk gonostr.SecretKey, relays []string, allowedUsers map[string]struct{}) *Backend {
 	t.Helper()
+
 	return newTestBackendWithHandler(t, sk, relays, allowedUsers, func(context.Context, backend.Message) {})
 }
 
@@ -537,6 +595,7 @@ func newTestBackendWithHandler(t *testing.T, sk gonostr.SecretKey, relays []stri
 	if err != nil {
 		t.Fatal(err)
 	}
+
 	return b
 }
 
@@ -546,6 +605,7 @@ func sendTestDM(t *testing.T, ctx context.Context, wsURL string, senderSK gonost
 
 	pool := gonostr.NewPool(gonostr.PoolOptions{})
 	defer pool.Close("test done")
+
 	kr := keyer.NewPlainKeySigner(senderSK)
 
 	_, toThem, err := nip17.PrepareMessage(ctx, content, nil, kr, recipientPK, nil)

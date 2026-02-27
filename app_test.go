@@ -40,25 +40,30 @@ func (m *mockBackend) Close() error                { return nil }
 func (m *mockBackend) SendMessage(_ context.Context, conversationID string, text string) {
 	m.mu.Lock()
 	defer m.mu.Unlock()
+
 	m.sentMessages = append(m.sentMessages, sentMessage{conversationID, text})
 }
 
 func (m *mockBackend) SendFile(_ context.Context, conversationID string, filePath string) error {
 	m.mu.Lock()
 	defer m.mu.Unlock()
+
 	m.sentFiles = append(m.sentFiles, sentFile{conversationID, filePath})
+
 	return nil
 }
 
 func (m *mockBackend) SetTyping(_ context.Context, conversationID string, typing bool) {
 	m.mu.Lock()
 	defer m.mu.Unlock()
+
 	m.typingCalls = append(m.typingCalls, typingCall{conversationID, typing})
 }
 
 func (m *mockBackend) ResetConversation(_ context.Context, conversationID string) {
 	m.mu.Lock()
 	defer m.mu.Unlock()
+
 	m.resetCalls = append(m.resetCalls, conversationID)
 }
 
@@ -88,6 +93,7 @@ func TestApp_Restart(t *testing.T) {
 	if len(mb.sentMessages) != 1 {
 		t.Fatalf("sent %d messages, want 1", len(mb.sentMessages))
 	}
+
 	if mb.sentMessages[0].conversationID != "!room1" {
 		t.Errorf("sent to %q, want %q", mb.sentMessages[0].conversationID, "!room1")
 	}
@@ -119,6 +125,7 @@ func TestApp_SystemPrompt(t *testing.T) {
 	app := NewApp(mb, pool, nil)
 
 	got := app.systemPrompt("Base prompt")
+
 	want := "Base prompt\n\nYou are in a Nostr DM."
 	if got != want {
 		t.Errorf("systemPrompt = %q, want %q", got, want)

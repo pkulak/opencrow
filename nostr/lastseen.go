@@ -31,10 +31,12 @@ func loadSeenRumors(baseDir string, maxAge time.Duration) map[string]time.Time {
 	var entries []seenRumorsEntry
 	if err := json.Unmarshal(data, &entries); err != nil {
 		slog.Warn("nostr: failed to parse seen_rumors", "error", err)
+
 		return result
 	}
 
 	cutoff := time.Now().Add(-maxAge)
+
 	for _, e := range entries {
 		t := time.Unix(e.Seen, 0)
 		if t.After(cutoff) {
@@ -52,6 +54,7 @@ func saveSeenRumors(baseDir string, seen map[string]time.Time) {
 	dir := filepath.Dir(filepath.Join(baseDir, seenRumorsFile))
 	if err := os.MkdirAll(dir, 0o755); err != nil {
 		slog.Warn("nostr: failed to create dir for seen_rumors", "error", err)
+
 		return
 	}
 
@@ -63,25 +66,31 @@ func saveSeenRumors(baseDir string, seen map[string]time.Time) {
 	data, err := json.Marshal(entries)
 	if err != nil {
 		slog.Warn("nostr: failed to marshal seen_rumors", "error", err)
+
 		return
 	}
 
 	tmpFile, err := os.CreateTemp(dir, ".seen_rumors_*.tmp")
 	if err != nil {
 		slog.Warn("nostr: failed to create temp file for seen_rumors", "error", err)
+
 		return
 	}
+
 	tmpPath := tmpFile.Name()
 
 	if _, err := tmpFile.Write(data); err != nil {
 		tmpFile.Close()
 		os.Remove(tmpPath)
 		slog.Warn("nostr: failed to write seen_rumors temp file", "error", err)
+
 		return
 	}
+
 	if err := tmpFile.Close(); err != nil {
 		os.Remove(tmpPath)
 		slog.Warn("nostr: failed to close seen_rumors temp file", "error", err)
+
 		return
 	}
 
@@ -104,5 +113,6 @@ func sinceFromSeenRumors(seen map[string]time.Time, maxAge time.Duration) gonost
 
 	// Go back maxAge from the oldest entry (or from now if empty)
 	since := oldest.Add(-maxAge)
+
 	return max(gonostr.Timestamp(since.Unix()), 0)
 }

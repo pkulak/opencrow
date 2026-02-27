@@ -56,6 +56,7 @@ func TestStartTestRelay_SmokeTest(t *testing.T) {
 		if received.Content != "hello from test" {
 			t.Errorf("got content %q, want %q", received.Content, "hello from test")
 		}
+
 		if received.PubKey != pk {
 			t.Errorf("got pubkey %s, want %s", received.PubKey, pk)
 		}

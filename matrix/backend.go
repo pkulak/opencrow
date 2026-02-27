@@ -112,7 +112,9 @@ func (b *Backend) Run(ctx context.Context) error {
 		if since != "" {
 			b.initialSynced.Store(true)
 		}
+
 		slog.Debug("sync", "since", since, "joined_rooms", len(resp.Rooms.Join), "invited_rooms", len(resp.Rooms.Invite))
+
 		return true
 	})
 
@@ -135,6 +137,7 @@ func (b *Backend) Close() error {
 	if b.cryptoHelper != nil {
 		return fmt.Errorf("closing crypto helper: %w", b.cryptoHelper.Close())
 	}
+
 	return nil
 }
 
@@ -149,6 +152,7 @@ func (b *Backend) SendMessage(ctx context.Context, conversationID string, text s
 			if idx := lastNewline(chunk[:cutoff]); idx > 0 {
 				cutoff = idx + 1
 			}
+
 			chunk = text[:cutoff]
 			text = text[cutoff:]
 		} else {
@@ -156,9 +160,11 @@ func (b *Backend) SendMessage(ctx context.Context, conversationID string, text s
 		}
 
 		content := format.RenderMarkdown(chunk, true, false)
+
 		_, err := b.client.SendMessageEvent(ctx, roomID, event.EventMessage, &content)
 		if err != nil {
 			slog.Error("failed to send message", "room", roomID, "error", err)
+
 			return
 		}
 	}
@@ -188,6 +194,7 @@ func (b *Backend) SendFile(ctx context.Context, conversationID string, filePath 
 	}
 
 	msgType := event.MsgFile
+
 	switch {
 	case strings.HasPrefix(contentType, "image/"):
 		msgType = event.MsgImage
@@ -214,6 +221,7 @@ func (b *Backend) SendFile(ctx context.Context, conversationID string, filePath 
 	}
 
 	slog.Info("sent file to room", "room", roomID, "path", filePath, "mime", contentType, "size", len(data))
+
 	return nil
 }
 
@@ -223,6 +231,7 @@ func (b *Backend) SetTyping(ctx context.Context, conversationID string, typing b
 	if !typing {
 		timeout = 0
 	}
+
 	if _, err := b.client.UserTyping(ctx, id.RoomID(conversationID), typing, timeout); err != nil {
 		slog.Warn("failed to set typing indicator", "room", conversationID, "error", err)
 	}
@@ -267,9 +276,11 @@ func (b *Backend) setupCrypto(ctx context.Context) error {
 		if err != nil {
 			return fmt.Errorf("fetching device ID from server: %w", err)
 		}
+
 		if resp.DeviceID == "" {
 			return errors.New("server did not return a device ID; set OPENCROW_MATRIX_DEVICE_ID")
 		}
+
 		b.client.DeviceID = resp.DeviceID
 		slog.Info("resolved device ID from server", "device_id", resp.DeviceID)
 	}
@@ -282,17 +293,20 @@ func (b *Backend) setupCrypto(ctx context.Context) error {
 	db, err := dbutil.NewWithDB(sqlDB, "sqlite")
 	if err != nil {
 		sqlDB.Close()
+
 		return fmt.Errorf("wrapping crypto database: %w", err)
 	}
 
 	cryptoHelper, err := cryptohelper.NewCryptoHelper(b.client, []byte(b.cfg.PickleKey), db)
 	if err != nil {
 		db.Close()
+
 		return fmt.Errorf("creating crypto helper: %w", err)
 	}
 
 	if err := cryptoHelper.Init(ctx); err != nil {
 		db.Close()
+
 		return fmt.Errorf("initializing crypto: %w", err)
 	}
 
@@ -318,6 +332,7 @@ func (b *Backend) ensureCrossSigning(ctx context.Context) error {
 
 	if hasKeys && isVerified {
 		slog.Info("device is already cross-signed")
+
 		return nil
 	}
 
@@ -329,6 +344,7 @@ func (b *Backend) ensureCrossSigning(ctx context.Context) error {
 	}
 
 	slog.Info("cross-signing setup complete, store this recovery key securely", "recovery_key", recoveryKey)
+
 	return nil
 }
 
@@ -360,6 +376,7 @@ func (b *Backend) handleInvite(ctx context.Context, evt *event.Event) {
 	if len(b.allowedUsers) > 0 {
 		if _, ok := b.allowedUsers[string(evt.Sender)]; !ok {
 			slog.Info("ignoring invite from non-allowed user", "sender", evt.Sender, "room", evt.RoomID)
+
 			return
 		}
 	}
@@ -368,6 +385,7 @@ func (b *Backend) handleInvite(ctx context.Context, evt *event.Event) {
 	if b.activeRoom != "" {
 		b.roomMu.Unlock()
 		slog.Info("ignoring invite, already active in a room", "active_room", b.activeRoom, "invited_room", evt.RoomID)
+
 		return
 	}
 	b.roomMu.Unlock()
@@ -377,6 +395,7 @@ func (b *Backend) handleInvite(ctx context.Context, evt *event.Event) {
 	_, err := b.client.JoinRoomByID(ctx, evt.RoomID)
 	if err != nil {
 		slog.Error("failed to join room", "room", evt.RoomID, "error", err)
+
 		return
 	}
 
@@ -392,12 +411,14 @@ func (b *Backend) handleLeave(ctx context.Context, evt *event.Event, mem *event.
 	if target == b.userID {
 		slog.Info("bot removed from room, cleaning up", "room", roomID, "membership", mem.Membership)
 		b.cleanupRoom(roomID)
+
 		return
 	}
 
 	members, err := b.client.JoinedMembers(ctx, evt.RoomID)
 	if err != nil {
 		slog.Warn("failed to query room members", "room", roomID, "error", err)
+
 		return
 	}
 
@@ -475,6 +496,7 @@ func (b *Backend) handleMessage(ctx context.Context, evt *event.Event) {
 	// Handle !verify (Matrix-specific) before reaching the handler
 	if text == "!verify" {
 		b.handleVerify(ctx, evt.RoomID)
+
 		return
 	}
 
@@ -484,6 +506,7 @@ func (b *Backend) handleMessage(ctx context.Context, evt *event.Event) {
 		if err != nil {
 			slog.Error("failed to download attachment", "room", roomID, "error", err)
 			b.SendMessage(ctx, roomID, fmt.Sprintf("Failed to download attachment: %v", err))
+
 			return
 		}
 
@@ -629,5 +652,6 @@ func lastNewline(s string) int {
 			return i
 		}
 	}
+
 	return -1
 }

@@ -7,6 +7,7 @@ import (
 	"encoding/base64"
 	"encoding/hex"
 	"encoding/json"
+	"errors"
 	"fmt"
 	"io"
 	"log/slog"
@@ -16,6 +17,7 @@ import (
 	"path"
 	"path/filepath"
 	"regexp"
+	"strconv"
 	"strings"
 	"time"
 
@@ -26,7 +28,7 @@ import (
 // Returns the URL on success.
 func (b *Backend) uploadToBlossomImpl(ctx context.Context, filePath string) (string, error) {
 	if len(b.cfg.BlossomServers) == 0 {
-		return "", fmt.Errorf("no blossom servers configured")
+		return "", errors.New("no blossom servers configured")
 	}
 
 	data, err := os.ReadFile(filePath)
@@ -49,18 +51,23 @@ func (b *Backend) uploadToBlossomImpl(ctx context.Context, filePath string) (str
 	if err != nil {
 		return "", fmt.Errorf("marshaling auth event: %w", err)
 	}
+
 	authHeader := "Nostr " + base64.StdEncoding.EncodeToString(evtJSON)
 
 	// Try each server in order
 	var lastErr error
+
 	for _, server := range b.cfg.BlossomServers {
 		url, err := uploadToServer(ctx, server, data, contentType, authHeader, hashHex)
 		if err != nil {
 			slog.Warn("nostr: blossom upload failed", "server", server, "error", err)
 			lastErr = err
+
 			continue
 		}
+
 		slog.Info("nostr: uploaded to blossom", "server", server, "url", url)
+
 		return url, nil
 	}
 
@@ -70,14 +77,16 @@ func (b *Backend) uploadToBlossomImpl(ctx context.Context, filePath string) (str
 func uploadToServer(ctx context.Context, server string, data []byte, contentType, authHeader, hashHex string) (string, error) {
 	uploadURL := strings.TrimRight(server, "/") + "/upload"
 
-	req, err := http.NewRequestWithContext(ctx, "PUT", uploadURL, bytes.NewReader(data))
+	req, err := http.NewRequestWithContext(ctx, http.MethodPut, uploadURL, bytes.NewReader(data))
 	if err != nil {
 		return "", err
 	}
+
 	req.Header.Set("Authorization", authHeader)
 	req.Header.Set("Content-Type", contentType)
 
 	client := &http.Client{Timeout: 30 * time.Second}
+
 	resp, err := client.Do(req)
 	if err != nil {
 		return "", err
@@ -101,18 +110,20 @@ func uploadToServer(ctx context.Context, server string, data []byte, contentType
 
 func buildBlossomAuthEvent(hashHex string, keys Keys) (gonostr.Event, error) {
 	expiration := time.Now().Add(5 * time.Minute).Unix()
+
 	evt := gonostr.Event{
 		Kind:      24242,
 		CreatedAt: gonostr.Now(),
 		Tags: gonostr.Tags{
 			{"t", "upload"},
 			{"x", hashHex},
-			{"expiration", fmt.Sprintf("%d", expiration)},
+			{"expiration", strconv.FormatInt(expiration, 10)},
 		},
 	}
 	if err := evt.Sign(keys.SK); err != nil {
 		return evt, err
 	}
+
 	return evt, nil
 }
 
@@ -124,12 +135,13 @@ const maxDownloadSize = 50 << 20 // 50 MiB
 // downloadURL downloads a URL to the per-conversation attachments dir.
 // Returns the local file path.
 func downloadURL(ctx context.Context, rawURL, sessionBaseDir, conversationID string) (string, error) {
-	req, err := http.NewRequestWithContext(ctx, "GET", rawURL, nil)
+	req, err := http.NewRequestWithContext(ctx, http.MethodGet, rawURL, nil)
 	if err != nil {
 		return "", fmt.Errorf("creating request: %w", err)
 	}
 
 	client := &http.Client{Timeout: 30 * time.Second}
+
 	resp, err := client.Do(req)
 	if err != nil {
 		return "", fmt.Errorf("downloading: %w", err)
@@ -145,6 +157,7 @@ func downloadURL(ctx context.Context, rawURL, sessionBaseDir, conversationID str
 	if parsed, parseErr := url.Parse(rawURL); parseErr == nil {
 		filename = path.Base(parsed.Path)
 	}
+
 	filename = sanitizeFilename(filename)
 
 	downloadDir := filepath.Join(sessionBaseDir, conversationID, "attachments")
@@ -157,25 +170,31 @@ func downloadURL(ctx context.Context, rawURL, sessionBaseDir, conversationID str
 	ext := filepath.Ext(filename)
 	base := strings.TrimSuffix(filename, ext)
 	pattern := base + "_*" + ext
+
 	f, err := os.CreateTemp(downloadDir, pattern)
 	if err != nil {
 		return "", fmt.Errorf("creating file: %w", err)
 	}
 	defer f.Close()
+
 	destPath := f.Name()
 
 	// Limit download size to prevent disk exhaustion from oversized payloads.
 	limited := io.LimitReader(resp.Body, maxDownloadSize+1)
+
 	n, err := io.Copy(f, limited)
 	if err != nil {
 		// Remove the partial file so failed downloads don't leak on disk.
 		f.Close()
 		os.Remove(destPath)
+
 		return "", fmt.Errorf("writing file: %w", err)
 	}
+
 	if n > maxDownloadSize {
 		f.Close()
 		os.Remove(destPath)
+
 		return "", fmt.Errorf("download exceeds maximum size of %d bytes", maxDownloadSize)
 	}
 
@@ -196,15 +215,18 @@ func sanitizeFilename(name string) string {
 	const maxLen = 200
 	if len(name) > maxLen {
 		ext := filepath.Ext(name)
+
 		base := strings.TrimSuffix(name, ext)
 		if len(base) > maxLen-len(ext) {
 			base = base[:maxLen-len(ext)]
 		}
+
 		name = base + ext
 	}
 
 	if name == "" || name == "." || name == "/" {
 		name = "attachment"
 	}
+
 	return name
 }

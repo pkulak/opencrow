@@ -110,9 +110,11 @@ func LoadConfig() (*Config, error) {
 		if cfg.Matrix.Homeserver == "" {
 			return nil, errors.New("OPENCROW_MATRIX_HOMESERVER is required")
 		}
+
 		if cfg.Matrix.UserID == "" {
 			return nil, errors.New("OPENCROW_MATRIX_USER_ID is required")
 		}
+
 		if cfg.Matrix.AccessToken == "" {
 			return nil, errors.New("OPENCROW_MATRIX_ACCESS_TOKEN is required")
 		}
@@ -122,6 +124,7 @@ func LoadConfig() (*Config, error) {
 		if err != nil {
 			return nil, err
 		}
+
 		cfg.Nostr = nostrCfg
 	}
 
@@ -299,6 +302,7 @@ func loadNostrPrivateKey() (string, error) {
 		if err != nil {
 			return "", fmt.Errorf("reading OPENCROW_NOSTR_PRIVATE_KEY_FILE: %w", err)
 		}
+
 		raw = strings.TrimSpace(string(data))
 	}
 
@@ -316,13 +320,16 @@ func loadNostrPrivateKey() (string, error) {
 		if err != nil {
 			return "", fmt.Errorf("decoding nsec: %w", err)
 		}
+
 		if prefix != "nsec" {
 			return "", fmt.Errorf("expected nsec prefix, got %s", prefix)
 		}
+
 		sk, ok := val.(gonostr.SecretKey)
 		if !ok {
 			return "", fmt.Errorf("decoded value is not gonostr.SecretKey: %T", val)
 		}
+
 		raw = sk.Hex()
 	}
 
@@ -338,15 +345,19 @@ func parseNostrAllowedUsers(s string) (map[string]struct{}, error) {
 			if err != nil {
 				return nil, fmt.Errorf("decoding npub %q: %w", u, err)
 			}
+
 			if prefix != "npub" {
 				return nil, fmt.Errorf("expected npub prefix, got %s", prefix)
 			}
+
 			pk, ok := val.(gonostr.PubKey)
 			if !ok {
 				return nil, fmt.Errorf("decoded value is not gonostr.PubKey: %T", val)
 			}
+
 			u = pk.Hex()
 		}
+
 		users[u] = struct{}{}
 	}
 
@@ -359,6 +370,7 @@ func parseCommaSeparated(s string) []string {
 	}
 
 	var result []string
+
 	for part := range strings.SplitSeq(s, ",") {
 		part = strings.TrimSpace(part)
 		if part != "" {

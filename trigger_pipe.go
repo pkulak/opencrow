@@ -58,6 +58,7 @@ func (t *TriggerPipeManager) Start(ctx context.Context) {
 			select {
 			case <-ctx.Done():
 				t.stopAll()
+
 				return
 			case <-ticker.C:
 				t.syncReaders(ctx)
@@ -79,6 +80,7 @@ func (t *TriggerPipeManager) StartRoom(ctx context.Context, roomID string) {
 
 	if err := ensureFIFO(pipePath); err != nil {
 		slog.Warn("trigger: failed to ensure FIFO", "room", roomID, "path", pipePath, "error", err)
+
 		return
 	}
 
@@ -141,6 +143,7 @@ func (t *TriggerPipeManager) readLoop(ctx context.Context, roomID, pipePath stri
 	f, err := os.OpenFile(pipePath, os.O_RDWR, 0)
 	if err != nil {
 		slog.Error("trigger: failed to open FIFO", "room", roomID, "path", pipePath, "error", err)
+
 		return
 	}
 	defer f.Close()
@@ -180,6 +183,7 @@ func (t *TriggerPipeManager) processTrigger(ctx context.Context, roomID, content
 	pi, err := t.pool.Get(ctx, roomID)
 	if err != nil {
 		slog.Error("trigger: failed to get pi process", "room", roomID, "error", err)
+
 		return
 	}
 
@@ -189,16 +193,19 @@ func (t *TriggerPipeManager) processTrigger(ctx context.Context, roomID, content
 	if err != nil {
 		slog.Error("trigger: pi prompt failed", "room", roomID, "error", err)
 		t.pool.Remove(roomID)
+
 		return
 	}
 
 	if containsHeartbeatOK(reply) {
 		slog.Info("trigger: HEARTBEAT_OK, suppressing", "room", roomID)
+
 		return
 	}
 
 	if reply == "" {
 		slog.Info("trigger: empty response, suppressing", "room", roomID)
+
 		return
 	}
 

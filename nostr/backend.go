@@ -87,6 +87,7 @@ func (b *Backend) Run(ctx context.Context) error {
 	slog.Info("nostr: subscribing to DMs", "pubkey", b.keys.PK.Hex(), "since", since, "seen_rumors", len(b.seenRumors), "relays", b.cfg.Relays)
 
 	ctx, cancel := context.WithCancel(ctx)
+
 	b.cancelMu.Lock()
 	b.cancelFn = cancel
 	b.cancelMu.Unlock()
@@ -104,6 +105,7 @@ func (b *Backend) Run(ctx context.Context) error {
 		if ctx.Err() != nil {
 			break
 		}
+
 		slog.Debug("nostr: gift wrap received from relay", "relay", ie.Relay.URL, "event_id", ie.ID.Hex())
 		evt := ie.Event
 		b.processGiftWrap(ctx, &evt)
@@ -144,6 +146,7 @@ func (b *Backend) pruneSeen() {
 			delete(b.seenRumors, id)
 		}
 	}
+
 	saveSeenRumors(b.cfg.SessionBaseDir, b.seenRumors)
 	b.seenRumorsMu.Unlock()
 }
@@ -162,6 +165,7 @@ func (b *Backend) Close() error {
 	if b.pool != nil {
 		b.pool.Close("backend closed")
 	}
+
 	return nil
 }
 
@@ -170,6 +174,7 @@ func (b *Backend) SendMessage(ctx context.Context, conversationID string, text s
 	recipientPK, err := gonostr.PubKeyFromHex(conversationID)
 	if err != nil {
 		slog.Error("nostr: invalid recipient pubkey", "conversationID", conversationID, "error", err)
+
 		return
 	}
 
@@ -177,10 +182,13 @@ func (b *Backend) SendMessage(ctx context.Context, conversationID string, text s
 		// Pool not started yet — create a temporary keyer and pool
 		pool := gonostr.NewPool(gonostr.PoolOptions{})
 		defer pool.Close("temporary pool done")
+
 		kr := keyer.NewPlainKeySigner(b.keys.SK)
 		b.sendDM(ctx, kr, pool, recipientPK, text)
+
 		return
 	}
+
 	b.sendDM(ctx, b.kr, b.pool, recipientPK, text)
 }
 
@@ -188,6 +196,7 @@ func (b *Backend) sendDM(ctx context.Context, kr gonostr.Keyer, pool *gonostr.Po
 	toUs, toThem, err := nip17.PrepareMessage(ctx, text, nil, kr, recipientPK, nil)
 	if err != nil {
 		slog.Error("nostr: failed to prepare DM", "recipient", recipientPK.Hex(), "error", err)
+
 		return
 	}
 
@@ -195,11 +204,14 @@ func (b *Backend) sendDM(ctx context.Context, kr gonostr.Keyer, pool *gonostr.Po
 		r, err := pool.EnsureRelay(relayURL)
 		if err != nil {
 			slog.Warn("nostr: failed to connect to relay", "relay", relayURL, "error", err)
+
 			continue
 		}
+
 		if err := r.Publish(ctx, toUs); err != nil {
 			slog.Warn("nostr: failed to publish toUs", "relay", relayURL, "error", err)
 		}
+
 		if err := r.Publish(ctx, toThem); err != nil {
 			slog.Warn("nostr: failed to publish toThem", "relay", relayURL, "error", err)
 		}
@@ -212,7 +224,9 @@ func (b *Backend) SendFile(ctx context.Context, conversationID string, filePath 
 	if err != nil {
 		return err
 	}
+
 	b.SendMessage(ctx, conversationID, url)
+
 	return nil
 }
 
@@ -253,6 +267,7 @@ You can include multiple <sendfile> tags in a single response.`
 func (b *Backend) processGiftWrap(ctx context.Context, evt *gonostr.Event) {
 	if evt == nil {
 		slog.Debug("nostr: processGiftWrap called with nil event")
+
 		return
 	}
 
@@ -263,8 +278,10 @@ func (b *Backend) processGiftWrap(ctx context.Context, evt *gonostr.Event) {
 	if _, ok := b.seenGiftWrap[evt.ID]; ok {
 		b.seenMu.Unlock()
 		slog.Debug("nostr: dropping duplicate gift wrap", "event_id", evt.ID.Hex())
+
 		return
 	}
+
 	b.seenGiftWrap[evt.ID] = time.Now()
 	b.seenMu.Unlock()
 
@@ -276,17 +293,21 @@ func (b *Backend) processGiftWrap(ctx context.Context, evt *gonostr.Event) {
 	)
 	if err != nil {
 		slog.Warn("nostr: failed to unwrap gift wrap", "event_id", evt.ID.Hex(), "error", err)
+
 		return
 	}
 
 	// Dedup by rumor ID (persisted, survives restarts)
 	rumorHex := rumor.ID.Hex()
+
 	b.seenRumorsMu.Lock()
 	if _, ok := b.seenRumors[rumorHex]; ok {
 		b.seenRumorsMu.Unlock()
 		slog.Debug("nostr: dropping already-processed rumor", "rumor_id", rumorHex, "event_id", evt.ID.Hex())
+
 		return
 	}
+
 	b.seenRumors[rumorHex] = time.Now()
 	saveSeenRumors(b.cfg.SessionBaseDir, b.seenRumors)
 	b.seenRumorsMu.Unlock()
@@ -294,6 +315,7 @@ func (b *Backend) processGiftWrap(ctx context.Context, evt *gonostr.Event) {
 	senderPK := rumor.PubKey
 	if senderPK == b.keys.PK {
 		slog.Debug("nostr: dropping own message echo", "event_id", evt.ID.Hex())
+
 		return
 	}
 
@@ -303,6 +325,7 @@ func (b *Backend) processGiftWrap(ctx context.Context, evt *gonostr.Event) {
 	if len(b.cfg.AllowedUsers) > 0 {
 		if _, ok := b.cfg.AllowedUsers[senderHex]; !ok {
 			slog.Debug("nostr: dropping DM from non-allowed user", "sender", senderHex)
+
 			return
 		}
 	}
@@ -315,12 +338,14 @@ func (b *Backend) processGiftWrap(ctx context.Context, evt *gonostr.Event) {
 	} else if b.activeConvID != senderHex {
 		b.activeMu.Unlock()
 		slog.Info("nostr: dropping DM, different active conversation", "active", b.activeConvID, "sender", senderHex)
+
 		return
 	}
 	b.activeMu.Unlock()
 
 	slog.Info("nostr: received DM", "sender", senderHex, "len", len(rumor.Content), "tags", len(rumor.Tags))
 	slog.Debug("nostr: received DM content", "sender", senderHex, "content", rumor.Content)
+
 	for _, tag := range rumor.Tags {
 		slog.Debug("nostr: received DM tag", "sender", senderHex, "tag", tag)
 	}
@@ -356,6 +381,7 @@ func (b *Backend) rewriteMediaURLs(ctx context.Context, text, conversationID str
 		localPath, err := downloadURL(ctx, rawURL, b.cfg.SessionBaseDir, conversationID)
 		if err != nil {
 			slog.Warn("nostr: failed to download media URL", "url", rawURL, "error", err)
+
 			continue
 		}
 

@@ -17,11 +17,14 @@ import (
 
 func TestSendFile_UploadsToBlossom(t *testing.T) {
 	var receivedBody []byte
+
 	srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
-		if r.Method != "PUT" || r.URL.Path != "/upload" {
-			http.Error(w, "not found", 404)
+		if r.Method != http.MethodPut || r.URL.Path != "/upload" {
+			http.Error(w, "not found", http.StatusNotFound)
+
 			return
 		}
+
 		body, _ := io.ReadAll(r.Body)
 		receivedBody = body
 		_ = json.NewEncoder(w).Encode(map[string]string{"url": "https://blossom.example.com/abc123"})
@@ -29,6 +32,7 @@ func TestSendFile_UploadsToBlossom(t *testing.T) {
 	defer srv.Close()
 
 	botSK := gonostr.Generate()
+
 	b, err := NewBackend(Config{
 		PrivateKey:     botSK.Hex(),
 		Relays:         []string{},
@@ -57,6 +61,7 @@ func TestSendFile_UploadsToBlossom(t *testing.T) {
 	if url != "https://blossom.example.com/abc123" {
 		t.Errorf("url = %q, want %q", url, "https://blossom.example.com/abc123")
 	}
+
 	if string(receivedBody) != "fake image data" {
 		t.Errorf("server received %q, want %q", receivedBody, "fake image data")
 	}
@@ -65,7 +70,7 @@ func TestSendFile_UploadsToBlossom(t *testing.T) {
 func TestSendFile_BlossomFallback(t *testing.T) {
 	// First server fails
 	srv1 := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, _ *http.Request) {
-		http.Error(w, "server error", 500)
+		http.Error(w, "server error", http.StatusInternalServerError)
 	}))
 	defer srv1.Close()
 
@@ -77,6 +82,7 @@ func TestSendFile_BlossomFallback(t *testing.T) {
 	defer srv2.Close()
 
 	botSK := gonostr.Generate()
+
 	b, err := NewBackend(Config{
 		PrivateKey:     botSK.Hex(),
 		Relays:         []string{},
@@ -118,6 +124,7 @@ func TestReceive_URLAttachmentDownload(t *testing.T) {
 	conversationID := "abcdef1234567890abcdef1234567890abcdef1234567890abcdef1234567890"
 
 	ctx := context.Background()
+
 	localPath, err := downloadURL(ctx, srv.URL+"/photo.png", sessionDir, conversationID)
 	if err != nil {
 		t.Fatalf("downloadURL: %v", err)
@@ -128,6 +135,7 @@ func TestReceive_URLAttachmentDownload(t *testing.T) {
 	if err != nil {
 		t.Fatalf("reading downloaded file: %v", err)
 	}
+
 	if string(data) != "fake png data" {
 		t.Errorf("file content = %q, want %q", data, "fake png data")
 	}
@@ -145,12 +153,14 @@ func TestDownloadURL_ExceedsMaxSize(t *testing.T) {
 		w.Header().Set("Content-Type", "application/octet-stream")
 		// Write maxDownloadSize + 1 bytes to trigger the limit.
 		buf := make([]byte, 32*1024)
+
 		written := 0
 		for written <= maxDownloadSize {
 			n := len(buf)
 			if written+n > maxDownloadSize+1 {
 				n = maxDownloadSize + 1 - written
 			}
+
 			_, _ = w.Write(buf[:n])
 			written += n
 		}
@@ -161,10 +171,12 @@ func TestDownloadURL_ExceedsMaxSize(t *testing.T) {
 	conversationID := "abcdef1234567890abcdef1234567890abcdef1234567890abcdef1234567890"
 
 	ctx := context.Background()
+
 	_, err := downloadURL(ctx, srv.URL+"/huge.bin", sessionDir, conversationID)
 	if err == nil {
 		t.Fatal("expected error for oversized download, got nil")
 	}
+
 	if got := err.Error(); got != "download exceeds maximum size of 52428800 bytes" {
 		t.Errorf("unexpected error: %s", got)
 	}
@@ -178,11 +190,12 @@ func TestDownloadURL_ExceedsMaxSize(t *testing.T) {
 
 func TestSendFile_AllBlossomsFail(t *testing.T) {
 	srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, _ *http.Request) {
-		http.Error(w, "server error", 500)
+		http.Error(w, "server error", http.StatusInternalServerError)
 	}))
 	defer srv.Close()
 
 	botSK := gonostr.Generate()
+
 	b, err := NewBackend(Config{
 		PrivateKey:     botSK.Hex(),
 		Relays:         []string{},

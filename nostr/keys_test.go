@@ -15,9 +15,11 @@ func TestLoadKeys_Hex(t *testing.T) {
 	if err != nil {
 		t.Fatalf("loadKeys: %v", err)
 	}
+
 	if keys.SK != sk {
 		t.Errorf("SK = %s, want %s", keys.SK, sk)
 	}
+
 	if keys.PK != wantPK {
 		t.Errorf("PK = %s, want %s", keys.PK, wantPK)
 	}
@@ -32,9 +34,11 @@ func TestLoadKeys_Nsec(t *testing.T) {
 	if err != nil {
 		t.Fatalf("loadKeys: %v", err)
 	}
+
 	if keys.SK != sk {
 		t.Errorf("SK = %s, want %s", keys.SK, sk)
 	}
+
 	if keys.PK != wantPK {
 		t.Errorf("PK = %s, want %s", keys.PK, wantPK)
 	}

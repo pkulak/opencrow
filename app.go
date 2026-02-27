@@ -22,6 +22,7 @@ func extractSendFiles(text string) (string, []string) {
 	}
 
 	var paths []string
+
 	for _, m := range matches {
 		p := strings.TrimSpace(m[1])
 		if p != "" {
@@ -83,6 +84,7 @@ func (a *App) handlePrompt(ctx context.Context, msg backend.Message) {
 	if err != nil {
 		slog.Error("failed to get pi process", "conversation", msg.ConversationID, "error", err)
 		a.backend.SendMessage(ctx, msg.ConversationID, fmt.Sprintf("Error starting AI backend: %v", err))
+
 		return
 	}
 
@@ -94,16 +96,20 @@ func (a *App) handlePrompt(ctx context.Context, msg backend.Message) {
 	if err != nil {
 		slog.Error("pi prompt failed", "conversation", msg.ConversationID, "error", err)
 		a.pool.Remove(msg.ConversationID)
+
 		reply = fmt.Sprintf("Error: %v", err)
 	}
 
 	if reply == "" {
 		slog.Warn("pi returned empty response, re-prompting for summary", "conversation", msg.ConversationID)
+
 		reply, err = pi.Prompt(ctx, "You just completed a task but your response contained no text for the user. Please briefly summarize what you did or respond to the user's message.")
 		if err != nil {
 			slog.Error("re-prompt after empty response failed", "conversation", msg.ConversationID, "error", err)
+
 			reply = "(I completed some actions but failed to generate a summary.)"
 		}
+
 		if reply == "" {
 			reply = "(empty response)"
 		}
@@ -114,13 +120,18 @@ func (a *App) handlePrompt(ctx context.Context, msg backend.Message) {
 
 	cleanReply, filePaths := extractSendFiles(reply)
 
+	var fileSendErrors strings.Builder
+
 	for _, fp := range filePaths {
 		slog.Info("sending file", "conversation", msg.ConversationID, "path", fp)
+
 		if err := a.backend.SendFile(ctx, msg.ConversationID, fp); err != nil {
 			slog.Error("failed to send file", "conversation", msg.ConversationID, "path", fp, "error", err)
-			cleanReply += fmt.Sprintf("\n\n(failed to send file %s: %v)", filepath.Base(fp), err)
+			fileSendErrors.WriteString(fmt.Sprintf("\n\n(failed to send file %s: %v)", filepath.Base(fp), err))
 		}
 	}
+
+	cleanReply += fileSendErrors.String()
 
 	if cleanReply != "" {
 		a.backend.SendMessage(ctx, msg.ConversationID, cleanReply)
@@ -133,5 +144,6 @@ func (a *App) systemPrompt(basePrompt string) string {
 	if extra == "" {
 		return basePrompt
 	}
+
 	return strings.TrimRight(basePrompt, "\n") + "\n\n" + extra
 }

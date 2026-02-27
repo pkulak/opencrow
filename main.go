@@ -42,11 +42,14 @@ func run() int {
 	// The App needs the backend, but the backend needs the App's handler.
 	// Resolve this with a handler that forwards to the App once it's wired.
 	var app *App
+
 	handler := func(ctx context.Context, msg backend.Message) {
 		if app == nil {
 			slog.Error("received message before app was initialized")
+
 			return
 		}
+
 		app.HandleMessage(ctx, msg)
 	}
 
@@ -63,6 +66,7 @@ func run() int {
 
 	if err != nil {
 		slog.Error("failed to create backend", "error", err)
+
 		return 1
 	}
 

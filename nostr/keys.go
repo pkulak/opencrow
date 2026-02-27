@@ -22,21 +22,26 @@ func loadKeys(raw string) (Keys, error) {
 	}
 
 	var sk gonostr.SecretKey
+
 	if strings.HasPrefix(raw, "nsec") {
 		prefix, val, err := nip19.Decode(raw)
 		if err != nil {
 			return Keys{}, fmt.Errorf("decoding nsec: %w", err)
 		}
+
 		if prefix != "nsec" {
 			return Keys{}, fmt.Errorf("expected nsec prefix, got %s", prefix)
 		}
+
 		var ok bool
+
 		sk, ok = val.(gonostr.SecretKey)
 		if !ok {
 			return Keys{}, fmt.Errorf("nsec decoded to unexpected type %T", val)
 		}
 	} else {
 		var err error
+
 		sk, err = gonostr.SecretKeyFromHex(raw)
 		if err != nil {
 			return Keys{}, fmt.Errorf("parsing hex secret key: %w", err)
