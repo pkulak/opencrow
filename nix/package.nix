@@ -1,10 +1,20 @@
 {
+  lib,
   buildGoModule,
 }:
 buildGoModule {
   pname = "opencrow";
   version = "0.3.0";
-  src = ./..;
+  src = lib.fileset.toSource {
+    root = ./..;
+    fileset = lib.fileset.unions [
+      ./../go.mod
+      ./../go.sum
+      (lib.fileset.fileFilter (file: file.hasExt "go") ./..)
+      ./../skills
+      ./../SOUL.md
+    ];
+  };
   vendorHash = "sha256-WZ70HW3c4iGg5hpfYdIenKBaPFni7IwPhizakXhzj9Q=";
   tags = [ "goolm" ];
 
