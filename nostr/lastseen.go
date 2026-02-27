@@ -45,10 +45,12 @@ func loadSeenRumors(baseDir string, maxAge time.Duration) map[string]time.Time {
 	return result
 }
 
-// saveSeenRumors writes the seen rumor IDs to disk.
+// saveSeenRumors atomically writes the seen rumor IDs to disk.
+// It writes to a temporary file in the same directory and renames
+// it into place so a crash mid-write cannot corrupt the file.
 func saveSeenRumors(baseDir string, seen map[string]time.Time) {
-	path := filepath.Join(baseDir, seenRumorsFile)
-	if err := os.MkdirAll(filepath.Dir(path), 0o755); err != nil {
+	dir := filepath.Dir(filepath.Join(baseDir, seenRumorsFile))
+	if err := os.MkdirAll(dir, 0o755); err != nil {
 		slog.Warn("nostr: failed to create dir for seen_rumors", "error", err)
 		return
 	}
@@ -64,8 +66,29 @@ func saveSeenRumors(baseDir string, seen map[string]time.Time) {
 		return
 	}
 
-	if err := os.WriteFile(path, data, 0o644); err != nil {
-		slog.Warn("nostr: failed to save seen_rumors", "error", err)
+	tmpFile, err := os.CreateTemp(dir, ".seen_rumors_*.tmp")
+	if err != nil {
+		slog.Warn("nostr: failed to create temp file for seen_rumors", "error", err)
+		return
+	}
+	tmpPath := tmpFile.Name()
+
+	if _, err := tmpFile.Write(data); err != nil {
+		tmpFile.Close()
+		os.Remove(tmpPath)
+		slog.Warn("nostr: failed to write seen_rumors temp file", "error", err)
+		return
+	}
+	if err := tmpFile.Close(); err != nil {
+		os.Remove(tmpPath)
+		slog.Warn("nostr: failed to close seen_rumors temp file", "error", err)
+		return
+	}
+
+	finalPath := filepath.Join(baseDir, seenRumorsFile)
+	if err := os.Rename(tmpPath, finalPath); err != nil {
+		os.Remove(tmpPath)
+		slog.Warn("nostr: failed to rename seen_rumors into place", "error", err)
 	}
 }
 
