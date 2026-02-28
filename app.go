@@ -88,6 +88,13 @@ func (a *App) handlePrompt(ctx context.Context, msg backend.Message) {
 		return
 	}
 
+	if a.pool.cfg.ShowToolCalls {
+		pi.onToolCall = func(evt ToolCallEvent) {
+			text := formatToolCall(evt)
+			a.backend.SendMessage(ctx, msg.ConversationID, text)
+		}
+	}
+
 	if a.triggerMgr != nil {
 		a.triggerMgr.StartRoom(ctx, msg.ConversationID)
 	}
@@ -135,6 +142,38 @@ func (a *App) handlePrompt(ctx context.Context, msg backend.Message) {
 
 	if cleanReply != "" {
 		a.backend.SendMessage(ctx, msg.ConversationID, cleanReply)
+	}
+}
+
+// formatToolCall produces a short human-readable summary of a tool invocation.
+func formatToolCall(evt ToolCallEvent) string {
+	switch evt.ToolName {
+	case "bash":
+		if cmd, ok := evt.Args["command"].(string); ok {
+			return fmt.Sprintf("🔧 `%s`", cmd)
+		}
+
+		return "🔧 bash"
+	case "read":
+		if p, ok := evt.Args["path"].(string); ok {
+			return fmt.Sprintf("📄 reading `%s`", p)
+		}
+
+		return "📄 reading file"
+	case "edit":
+		if p, ok := evt.Args["path"].(string); ok {
+			return fmt.Sprintf("✏️ editing `%s`", p)
+		}
+
+		return "✏️ editing file"
+	case "write":
+		if p, ok := evt.Args["path"].(string); ok {
+			return fmt.Sprintf("📝 writing `%s`", p)
+		}
+
+		return "📝 writing file"
+	default:
+		return fmt.Sprintf("🔧 %s", evt.ToolName)
 	}
 }
 

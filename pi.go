@@ -18,15 +18,22 @@ import (
 
 const scannerBufSize = 1 << 20 // 1 MB
 
+// ToolCallEvent contains information about a tool invocation relayed from pi.
+type ToolCallEvent struct {
+	ToolName string
+	Args     map[string]interface{}
+}
+
 // PiProcess manages a single pi --mode rpc subprocess.
 type PiProcess struct {
-	cmd     *exec.Cmd
-	stdin   io.WriteCloser
-	stdout  *bufio.Scanner
-	done    chan struct{}
-	mu      sync.Mutex
-	lastUse time.Time
-	roomID  string
+	cmd        *exec.Cmd
+	stdin      io.WriteCloser
+	stdout     *bufio.Scanner
+	done       chan struct{}
+	mu         sync.Mutex
+	lastUse    time.Time
+	roomID     string
+	onToolCall func(ToolCallEvent) // optional callback for tool_execution_start events
 }
 
 // StartPi spawns a pi --mode rpc subprocess for the given room.
@@ -148,6 +155,10 @@ type rpcEvent struct {
 
 	// extension_ui_request fields
 	Method string `json:"method,omitempty"`
+
+	// tool_execution_start fields
+	ToolName string                 `json:"toolName,omitempty"`
+	Args     map[string]interface{} `json:"args,omitempty"`
 }
 
 // agentMessage represents a message in an agent_end event.
@@ -339,6 +350,14 @@ func (p *PiProcess) handleRPCLine(line string) (string, bool, error) {
 		}
 
 		return text, true, nil
+
+	case "tool_execution_start":
+		if p.onToolCall != nil {
+			p.onToolCall(ToolCallEvent{
+				ToolName: evt.ToolName,
+				Args:     evt.Args,
+			})
+		}
 
 	case "extension_ui_request":
 		p.autoRespondExtensionUI(evt)
