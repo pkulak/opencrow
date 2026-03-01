@@ -18,6 +18,9 @@ import (
 
 const scannerBufSize = 1 << 20 // 1 MB
 
+// ErrBusy is returned by PromptNoTouch when another prompt is already running.
+var ErrBusy = errors.New("pi process is busy")
+
 // ToolCallEvent contains information about a tool invocation relayed from pi.
 type ToolCallEvent struct {
 	ToolName string
@@ -179,9 +182,20 @@ type contentBlock struct {
 
 // Prompt sends a message to the pi process and waits for the agent to complete.
 // Returns the assistant's text response.
-func (p *PiProcess) Prompt(ctx context.Context, message string) (string, error) {
-	p.mu.Lock()
+func (p *PiProcess) Prompt(ctx context.Context, message string, onToolCall ...func(ToolCallEvent)) (string, error) {
+	// If lock is held (likely by a heartbeat), abort it so user messages
+	// always take priority. The heartbeat will retry on the next tick.
+	if !p.mu.TryLock() {
+		slog.Info("prompt: lock contended, aborting running operation", "room", p.roomID)
+		p.Abort()
+		p.mu.Lock()
+	}
 	defer p.mu.Unlock()
+
+	// Set tool call callback under lock to avoid racing with heartbeat suppression.
+	if len(onToolCall) > 0 {
+		p.onToolCall = onToolCall[0]
+	}
 
 	p.lastUse = time.Now()
 
@@ -211,8 +225,11 @@ func (p *PiProcess) Prompt(ctx context.Context, message string) (string, error) 
 
 // PromptNoTouch is like Prompt but does not update lastUse.
 // Used for heartbeat prompts so idle reaping still works.
+// Skips if another prompt is currently running (returns ErrBusy).
 func (p *PiProcess) PromptNoTouch(ctx context.Context, message string) (string, error) {
-	p.mu.Lock()
+	if !p.mu.TryLock() {
+		return "", ErrBusy
+	}
 	defer p.mu.Unlock()
 
 	if !p.IsAlive() {

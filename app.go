@@ -104,18 +104,19 @@ func (a *App) handlePrompt(ctx context.Context, msg backend.Message) {
 		return
 	}
 
+	if a.triggerMgr != nil {
+		a.triggerMgr.StartRoom(ctx, msg.ConversationID)
+	}
+
+	var toolCallFn func(ToolCallEvent)
 	if a.pool.cfg.ShowToolCalls {
-		pi.onToolCall = func(evt ToolCallEvent) {
+		toolCallFn = func(evt ToolCallEvent) {
 			text := formatToolCall(evt)
 			a.backend.SendMessage(ctx, msg.ConversationID, text)
 		}
 	}
 
-	if a.triggerMgr != nil {
-		a.triggerMgr.StartRoom(ctx, msg.ConversationID)
-	}
-
-	reply, err := pi.Prompt(ctx, msg.Text)
+	reply, err := pi.Prompt(ctx, msg.Text, toolCallFn)
 	if err != nil {
 		slog.Error("pi prompt failed", "conversation", msg.ConversationID, "error", err)
 		a.pool.Remove(msg.ConversationID)
