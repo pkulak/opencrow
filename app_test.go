@@ -37,11 +37,13 @@ func (m *mockBackend) Run(_ context.Context) error { return nil }
 func (m *mockBackend) Stop()                       {}
 func (m *mockBackend) Close() error                { return nil }
 
-func (m *mockBackend) SendMessage(_ context.Context, conversationID string, text string) {
+func (m *mockBackend) SendMessage(_ context.Context, conversationID string, text string, _ string) string {
 	m.mu.Lock()
 	defer m.mu.Unlock()
 
 	m.sentMessages = append(m.sentMessages, sentMessage{conversationID, text})
+
+	return ""
 }
 
 func (m *mockBackend) SendFile(_ context.Context, conversationID string, filePath string) error {
@@ -76,7 +78,7 @@ func TestApp_Restart(t *testing.T) {
 
 	mb := &mockBackend{}
 	pool := NewPiPool(PiConfig{SessionDir: t.TempDir()})
-	app := NewApp(mb, pool, nil)
+	app := NewApp(mb, pool, nil, t.TempDir())
 
 	ctx := context.Background()
 	app.HandleMessage(ctx, backend.Message{
@@ -106,7 +108,7 @@ func TestApp_Skills(t *testing.T) {
 
 	mb := &mockBackend{}
 	pool := NewPiPool(PiConfig{SessionDir: t.TempDir()})
-	app := NewApp(mb, pool, nil)
+	app := NewApp(mb, pool, nil, t.TempDir())
 
 	ctx := context.Background()
 	app.HandleMessage(ctx, backend.Message{
@@ -128,7 +130,7 @@ func TestApp_SystemPrompt(t *testing.T) {
 
 	mb := &mockBackend{systemPromptExtraText: "You are in a Nostr DM."}
 	pool := NewPiPool(PiConfig{SessionDir: t.TempDir()})
-	app := NewApp(mb, pool, nil)
+	app := NewApp(mb, pool, nil, t.TempDir())
 
 	got := app.systemPrompt("Base prompt")
 
@@ -143,7 +145,7 @@ func TestApp_SystemPrompt_NoExtra(t *testing.T) {
 
 	mb := &mockBackend{}
 	pool := NewPiPool(PiConfig{SessionDir: t.TempDir()})
-	app := NewApp(mb, pool, nil)
+	app := NewApp(mb, pool, nil, t.TempDir())
 
 	got := app.systemPrompt("Base prompt")
 	if got != "Base prompt" {

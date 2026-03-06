@@ -24,7 +24,7 @@ var ErrBusy = errors.New("pi process is busy")
 // ToolCallEvent contains information about a tool invocation relayed from pi.
 type ToolCallEvent struct {
 	ToolName string
-	Args     map[string]interface{}
+	Args     map[string]any
 }
 
 // PiProcess manages a single pi --mode rpc subprocess.
@@ -163,9 +163,9 @@ type rpcEvent struct {
 	// extension_ui_request fields
 	Method string `json:"method,omitempty"`
 
-	// tool_execution_start fields
-	ToolName string                 `json:"toolName,omitempty"`
-	Args     map[string]interface{} `json:"args,omitempty"`
+	// tool_execution_start fields — camelCase is dictated by the pi protocol.
+	ToolName string         `json:"toolName,omitempty"` //nolint:tagliatelle // pi protocol uses camelCase
+	Args     map[string]any `json:"args,omitempty"`
 }
 
 // agentMessage represents a message in an agent_end event.
@@ -202,28 +202,7 @@ func (p *PiProcess) Prompt(ctx context.Context, message string, onToolCall ...fu
 
 	p.lastUse = time.Now()
 
-	if !p.IsAlive() {
-		return "", errors.New("pi process is not alive")
-	}
-
-	if err := p.sendPromptCommand(message); err != nil {
-		return "", err
-	}
-
-	ctx, cancel := context.WithCancel(ctx)
-	defer cancel()
-
-	p.cancelMu.Lock()
-	p.cancelFunc = cancel
-	p.cancelMu.Unlock()
-
-	defer func() {
-		p.cancelMu.Lock()
-		p.cancelFunc = nil
-		p.cancelMu.Unlock()
-	}()
-
-	return p.waitForResult(ctx)
+	return p.sendAndWait(ctx, message)
 }
 
 // PromptNoTouch is like Prompt but does not update lastUse.
@@ -240,31 +219,11 @@ func (p *PiProcess) PromptNoTouch(ctx context.Context, message string, onToolCal
 	if len(onToolCall) > 0 {
 		savedToolCall := p.onToolCall
 		p.onToolCall = onToolCall[0]
+
 		defer func() { p.onToolCall = savedToolCall }()
 	}
 
-	if !p.IsAlive() {
-		return "", errors.New("pi process is not alive")
-	}
-
-	if err := p.sendPromptCommand(message); err != nil {
-		return "", err
-	}
-
-	ctx, cancel := context.WithCancel(ctx)
-	defer cancel()
-
-	p.cancelMu.Lock()
-	p.cancelFunc = cancel
-	p.cancelMu.Unlock()
-
-	defer func() {
-		p.cancelMu.Lock()
-		p.cancelFunc = nil
-		p.cancelMu.Unlock()
-	}()
-
-	return p.waitForResult(ctx)
+	return p.sendAndWait(ctx, message)
 }
 
 // Abort cancels the currently running prompt, if any.
@@ -276,6 +235,7 @@ func (p *PiProcess) Abort() bool {
 
 	if cancel != nil {
 		cancel()
+
 		return true
 	}
 
@@ -314,6 +274,34 @@ func (p *PiProcess) IsAlive() bool {
 // LastUse returns the time of the last prompt.
 func (p *PiProcess) LastUse() time.Time {
 	return p.lastUse
+}
+
+// sendAndWait sends a prompt command and waits for the agent to finish.
+// Must be called with p.mu held.
+func (p *PiProcess) sendAndWait(ctx context.Context, message string) (string, error) {
+	if !p.IsAlive() {
+		return "", errors.New("pi process is not alive")
+	}
+
+	ctx, cancel := context.WithCancel(ctx)
+	defer cancel()
+
+	p.cancelMu.Lock()
+	p.cancelFunc = cancel
+	p.cancelMu.Unlock()
+
+	clearCancel := func() {
+		p.cancelMu.Lock()
+		p.cancelFunc = nil
+		p.cancelMu.Unlock()
+	}
+	defer clearCancel()
+
+	if err := p.sendPromptCommand(message); err != nil {
+		return "", err
+	}
+
+	return p.waitForResult(ctx)
 }
 
 func (p *PiProcess) sendPromptCommand(message string) error {

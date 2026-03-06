@@ -91,17 +91,6 @@ func (t *TriggerPipeManager) StartRoom(ctx context.Context, roomID string) {
 	go t.readLoop(roomCtx, roomID, pipePath)
 }
 
-// StopRoom cancels the reader goroutine for a room.
-func (t *TriggerPipeManager) StopRoom(roomID string) {
-	t.mu.Lock()
-	defer t.mu.Unlock()
-
-	if cancel, ok := t.readers[roomID]; ok {
-		cancel()
-		delete(t.readers, roomID)
-	}
-}
-
 // syncReaders checks the session directory for a room and starts a reader
 // if one doesn't exist yet.
 func (t *TriggerPipeManager) syncReaders(ctx context.Context) {

@@ -141,9 +141,14 @@ func (b *Backend) Close() error {
 	return nil
 }
 
-// SendMessage sends a text message to a Matrix room. Fire-and-forget.
-func (b *Backend) SendMessage(ctx context.Context, conversationID string, text string) {
+// SendMessage sends a text message to a Matrix room. When replyToID is
+// non-empty, the first chunk is sent as a reply to that event.
+// Returns the event ID of the last sent chunk (or "" on failure).
+func (b *Backend) SendMessage(ctx context.Context, conversationID string, text string, replyToID string) string {
 	roomID := id.RoomID(conversationID)
+	firstChunk := true
+
+	var lastEventID string
 
 	for len(text) > 0 {
 		chunk := text
@@ -161,13 +166,23 @@ func (b *Backend) SendMessage(ctx context.Context, conversationID string, text s
 
 		content := format.RenderMarkdown(chunk, true, false)
 
-		_, err := b.client.SendMessageEvent(ctx, roomID, event.EventMessage, &content)
+		if firstChunk && replyToID != "" {
+			content.RelatesTo = (&event.RelatesTo{}).SetReplyTo(id.EventID(replyToID))
+		}
+
+		firstChunk = false
+
+		resp, err := b.client.SendMessageEvent(ctx, roomID, event.EventMessage, &content)
 		if err != nil {
 			slog.Error("failed to send message", "room", roomID, "error", err)
 
-			return
+			return lastEventID
 		}
+
+		lastEventID = string(resp.EventID)
 	}
+
+	return lastEventID
 }
 
 // SendFile uploads and sends a file to a Matrix room.
@@ -477,10 +492,19 @@ func (b *Backend) handleMessage(ctx context.Context, evt *event.Event) {
 		}
 	}
 
+	var replyToID string
+
+	if msg.RelatesTo != nil {
+		if replyTo := msg.RelatesTo.GetReplyTo(); replyTo != "" {
+			replyToID = string(replyTo)
+		}
+	}
+
 	b.handler(ctx, backend.Message{
 		ConversationID: roomID,
 		SenderID:       string(evt.Sender),
 		Text:           text,
+		ReplyToID:      replyToID,
 	})
 }
 
@@ -532,7 +556,7 @@ func (b *Backend) handleAttachment(ctx context.Context, msg *event.MessageEventC
 	filePath, err := b.downloadAttachment(ctx, msg, roomID)
 	if err != nil {
 		slog.Error("failed to download attachment", "room", roomID, "error", err)
-		b.SendMessage(ctx, roomID, fmt.Sprintf("Failed to download attachment: %v", err))
+		b.SendMessage(ctx, roomID, fmt.Sprintf("Failed to download attachment: %v", err), "")
 
 		return ""
 	}
@@ -552,9 +576,9 @@ func (b *Backend) handleVerify(ctx context.Context, roomID id.RoomID) {
 				"If the homeserver requires browser approval, log in as the bot at:\n"+
 				"https://account.matrix.org/account/?action=org.matrix.cross_signing_reset\n\n"+
 				"Approve the reset, then run `!verify` again.",
-			err))
+			err), "")
 	} else {
-		b.SendMessage(ctx, string(roomID), "Cross-signing verified.")
+		b.SendMessage(ctx, string(roomID), "Cross-signing verified.", "")
 	}
 }
 
