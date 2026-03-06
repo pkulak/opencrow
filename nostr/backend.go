@@ -138,7 +138,12 @@ func (b *Backend) Run(ctx context.Context) error {
 	go b.pruneSeenLoop(ctx)
 
 	// Drain the publish queue in the background.
-	go b.pubQueue.run(ctx)
+	pubDone := make(chan struct{})
+
+	go func() {
+		b.pubQueue.run(ctx)
+		close(pubDone)
+	}()
 
 	for ie := range events {
 		if ctx.Err() != nil {
@@ -149,6 +154,10 @@ func (b *Backend) Run(ctx context.Context) error {
 		evt := ie.Event
 		b.processGiftWrap(ctx, &evt)
 	}
+
+	// Wait for the publish queue goroutine to finish so it doesn't
+	// write to the data directory after Run returns.
+	<-pubDone
 
 	if err := ctx.Err(); err != nil {
 		return fmt.Errorf("nostr event loop: %w", err)
