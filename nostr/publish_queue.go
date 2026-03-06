@@ -384,7 +384,10 @@ func (q *publishQueue) saveLocked() {
 
 // calcBackoff returns the backoff duration for the given attempt number.
 func calcBackoff(attempts int) time.Duration {
-	d := time.Duration(float64(initialBackoff) * math.Pow(backoffMultiplier, float64(attempts-1)))
+	d := float64(initialBackoff) * math.Pow(backoffMultiplier, float64(attempts-1))
+	if d > float64(maxBackoff) {
+		return maxBackoff
+	}
 
-	return min(d, maxBackoff)
+	return time.Duration(d)
 }
