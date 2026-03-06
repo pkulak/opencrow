@@ -154,12 +154,8 @@ func (h *HeartbeatScheduler) tick(ctx context.Context, roomID string) bool {
 
 	prompt := buildHeartbeatPrompt(h.cfg.Prompt, content)
 
-	// Suppress tool call events during heartbeats to avoid noise.
-	savedCallback := pi.onToolCall
-	pi.onToolCall = nil
-	defer func() { pi.onToolCall = savedCallback }()
-
-	reply, err := pi.PromptNoTouch(ctx, prompt)
+	// Suppress tool call events during heartbeats by passing nil under the lock.
+	reply, err := pi.PromptNoTouch(ctx, prompt, nil)
 	if errors.Is(err, ErrBusy) {
 		slog.Info("heartbeat: skipped, pi process busy with user prompt", "room", roomID)
 
