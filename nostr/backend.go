@@ -3,10 +3,19 @@ package nostr
 
 import (
 	"context"
+	"crypto/aes"
+	"crypto/cipher"
+	"crypto/sha256"
+	"encoding/hex"
 	"encoding/json"
+	"errors"
 	"fmt"
 	"log/slog"
+	"mime"
+	"os"
+	"path/filepath"
 	"regexp"
+	"strconv"
 	"strings"
 	"sync"
 	"time"
@@ -63,6 +72,10 @@ type Backend struct {
 
 	// Persistent retry queue for failed publishes.
 	pubQueue *publishQueue
+
+	// wg tracks in-flight background goroutines (e.g. reactions) so Run
+	// can wait for them before returning.
+	wg sync.WaitGroup
 }
 
 // NewBackend creates a new Nostr backend. The keys are derived from cfg.PrivateKey.
@@ -96,6 +109,8 @@ func NewBackend(cfg Config, handler backend.MessageHandler) (*Backend, error) {
 }
 
 // Run starts the Nostr event loop — subscribes to kind 1059 gift wraps.
+//
+//nolint:contextcheck // publish queue intentionally uses a non-inherited context
 func (b *Backend) Run(ctx context.Context) error {
 	b.pool = gonostr.NewPool(gonostr.PoolOptions{
 		AuthRequiredHandler: func(_ context.Context, evt *gonostr.Event) error {
@@ -123,7 +138,7 @@ func (b *Backend) Run(ctx context.Context) error {
 	// they don't know the recipient's, so we need to listen on those too.
 	subRelays := b.discoverSubscriptionRelays(ctx)
 
-	since := sinceFromSeenRumors(b.seenRumors, b.seenTTL)
+	since := sinceFromSeenRumors(b.seenRumors)
 
 	slog.Info("nostr: subscribing to DMs", "pubkey", b.keys.PK.Hex(), "since", since, "seen_rumors", len(b.seenRumors), "relays", subRelays)
 
@@ -142,11 +157,14 @@ func (b *Backend) Run(ctx context.Context) error {
 	// Periodically prune the dedup set so it doesn't grow unbounded.
 	go b.pruneSeenLoop(ctx)
 
-	// Drain the publish queue in the background.
+	// Drain the publish queue in the background. Use a separate context
+	// so the queue keeps running while reaction goroutines finish enqueueing
+	// after the subscription context is cancelled.
+	pubCtx, pubCancel := context.WithCancel(context.Background())
 	pubDone := make(chan struct{})
 
 	go func() {
-		b.pubQueue.run(ctx)
+		b.pubQueue.run(pubCtx)
 		close(pubDone)
 	}()
 
@@ -157,18 +175,10 @@ func (b *Backend) Run(ctx context.Context) error {
 
 		slog.Debug("nostr: gift wrap received from relay", "relay", ie.Relay.URL, "event_id", ie.ID.Hex())
 		evt := ie.Event
-		b.processGiftWrap(ctx, &evt)
+		b.processGiftWrap(ctx, pubCtx, &evt)
 	}
 
-	// Wait for the publish queue goroutine to finish so it doesn't
-	// write to the data directory after Run returns.
-	<-pubDone
-
-	if err := ctx.Err(); err != nil {
-		return fmt.Errorf("nostr event loop: %w", err)
-	}
-
-	return nil
+	return b.drainAndShutdown(ctx, pubCancel, pubDone)
 }
 
 // Stop signals the backend to shut down.
@@ -260,6 +270,30 @@ You can include multiple <sendfile> tags in a single response.`
 }
 
 // --- unexported methods ---
+
+// drainAndShutdown waits for in-flight reaction goroutines, then stops the
+// publish queue and waits for it to finish writing.
+func (b *Backend) drainAndShutdown(ctx context.Context, pubCancel context.CancelFunc, pubDone <-chan struct{}) error {
+	// Wait for in-flight background goroutines (reactions) to finish
+	// enqueueing before stopping the publish queue. Without this,
+	// a reaction goroutine can write to the data directory after Run
+	// returns, racing with cleanup of the session directory.
+	b.wg.Wait()
+
+	// Now cancel the publish queue's context so its drain loop exits
+	// after processing any final items enqueued by the reactions above.
+	pubCancel()
+
+	// Wait for the publish queue goroutine to finish so it doesn't
+	// write to the data directory after Run returns.
+	<-pubDone
+
+	if err := ctx.Err(); err != nil {
+		return fmt.Errorf("nostr event loop: %w", err)
+	}
+
+	return nil
+}
 
 // discoverSubscriptionRelays returns the full set of relays to subscribe on:
 // the bot's configured relays, its DM relays, plus the DM relay lists of all
@@ -523,7 +557,7 @@ func (b *Backend) publishDMGiftWraps(ctx context.Context, pool *gonostr.Pool, to
 // sendReaction sends a NIP-25 kind 7 reaction gift-wrapped via NIP-59 to
 // acknowledge receipt of an incoming DM. The reaction references the original
 // rumor by its event ID so the sender's client can attach it to the right message.
-func (b *Backend) sendReaction(ctx context.Context, rumorID gonostr.ID, recipientPK gonostr.PubKey) {
+func (b *Backend) sendReaction(ctx context.Context, rumorID gonostr.ID, recipientPK gonostr.PubKey, rumorKind gonostr.Kind) {
 	rumor := gonostr.Event{
 		Kind:      gonostr.KindReaction,
 		Content:   "👍",
@@ -532,7 +566,7 @@ func (b *Backend) sendReaction(ctx context.Context, rumorID gonostr.ID, recipien
 		Tags: gonostr.Tags{
 			{"e", rumorID.Hex()},
 			{"p", recipientPK.Hex()},
-			{"k", "14"},
+			{"k", strconv.Itoa(int(rumorKind))},
 		},
 	}
 	rumor.ID = rumor.GetID()
@@ -572,7 +606,7 @@ func (b *Backend) publishToRelays(evt gonostr.Event, relays []string, label stri
 }
 
 // processGiftWrap unwraps a kind 1059 event and dispatches to the handler.
-func (b *Backend) processGiftWrap(ctx context.Context, evt *gonostr.Event) {
+func (b *Backend) processGiftWrap(ctx, pubCtx context.Context, evt *gonostr.Event) {
 	if evt == nil {
 		return
 	}
@@ -603,17 +637,30 @@ func (b *Backend) processGiftWrap(ctx context.Context, evt *gonostr.Event) {
 		return
 	}
 
-	slog.Info("nostr: received DM", "sender", senderHex, "len", len(rumor.Content), "tags", len(rumor.Tags))
+	slog.Info("nostr: received DM", "sender", senderHex, "kind", rumor.Kind, "len", len(rumor.Content), "tags", len(rumor.Tags))
 
 	// Send a 👍 reaction to acknowledge receipt before processing.
-	go b.sendReaction(ctx, rumor.ID, rumor.PubKey)
+	// Use pubCtx so the reaction can finish encrypting and enqueueing
+	// even after the subscription context is cancelled by Stop().
+	b.wg.Go(func() {
+		b.sendReaction(pubCtx, rumor.ID, rumor.PubKey, rumor.Kind)
+	})
 
-	text := b.rewriteMediaURLs(ctx, rumor.Content, senderHex)
+	var text string
+
+	if rumor.Kind == KindFileMessage {
+		text = b.handleFileMessage(ctx, rumor, senderHex)
+	} else {
+		// Kind 14 (chat message) or any other kind: treat content as text,
+		// rewriting any inline media URLs to local paths.
+		text = b.rewriteMediaURLs(ctx, rumor.Content, senderHex)
+	}
 
 	b.handler(ctx, backend.Message{
 		ConversationID: senderHex,
 		SenderID:       senderHex,
 		Text:           text,
+		MessageID:      rumor.ID.Hex(),
 		ReplyToID:      rumorReplyTarget(rumor),
 	})
 }
@@ -687,7 +734,192 @@ func (b *Backend) claimConversation(senderHex string) bool {
 	return true
 }
 
+// KindFileMessage is the NIP-17 kind for file messages (not yet in go-nostr).
+const KindFileMessage gonostr.Kind = 15
+
 var mediaURLRe = regexp.MustCompile(`(?i)https?://\S+\.(?:png|jpg|jpeg|gif|webp|pdf|mp3|mp4|wav|ogg|svg|bmp|tiff|zip)(?:\?\S*)?`)
+
+// handleFileMessage processes a NIP-17 kind 15 file message. The rumor's
+// content is the file URL and tags carry metadata (file-type, dimensions, etc.).
+// The file is downloaded and the message text is rewritten to reference the
+// local path so pi can read it with its tools.
+func (b *Backend) handleFileMessage(ctx context.Context, rumor gonostr.Event, conversationID string) string {
+	fileURL := strings.TrimSpace(rumor.Content)
+	if fileURL == "" {
+		slog.Warn("nostr: kind 15 file message with empty content", "sender", conversationID)
+
+		return "[User sent a file message with no URL]"
+	}
+
+	mimeType := tagValue(rumor.Tags, "file-type")
+
+	slog.Info("nostr: downloading file message", "url", fileURL, "mime", mimeType, "sender", conversationID)
+
+	localPath, err := downloadURL(ctx, fileURL, b.cfg.SessionBaseDir, conversationID)
+	if err != nil {
+		slog.Warn("nostr: failed to download file message", "url", fileURL, "error", err)
+
+		return fmt.Sprintf("[User sent a file but download failed: %s]", fileURL)
+	}
+
+	// Decrypt if the file was encrypted (NIP-17 kind 15 AES-GCM).
+	if algo := tagValue(rumor.Tags, "encryption-algorithm"); algo != "" {
+		if err := decryptFileInPlace(localPath, rumor.Tags); err != nil {
+			slog.Warn("nostr: failed to decrypt file message", "url", fileURL, "error", err)
+			os.Remove(localPath)
+
+			return "[User sent an encrypted file but decryption failed]"
+		}
+	}
+
+	// If the downloaded file has no extension, try to add one from the mime type.
+	localPath = maybeAddExtension(localPath, mimeType)
+
+	desc := descFromMIME(mimeType)
+
+	return fmt.Sprintf("[User sent a %s: %s]\nUse the read tool to view it.", desc, localPath)
+}
+
+// decryptFileInPlace reads the file at path, decrypts it using AES-GCM with
+// the key and nonce from the rumor tags, verifies the SHA-256 hash against
+// the "ox" tag (pre-encryption hash), and writes the plaintext back.
+func decryptFileInPlace(filePath string, tags gonostr.Tags) error {
+	algo := tagValue(tags, "encryption-algorithm")
+	if algo != "aes-gcm" {
+		return fmt.Errorf("unsupported encryption algorithm: %q", algo)
+	}
+
+	key, nonce, err := parseDecryptionParams(tags)
+	if err != nil {
+		return err
+	}
+
+	ciphertext, err := os.ReadFile(filePath)
+	if err != nil {
+		return fmt.Errorf("reading encrypted file: %w", err)
+	}
+
+	plaintext, err := decryptAESGCM(key, nonce, ciphertext)
+	if err != nil {
+		return err
+	}
+
+	// Verify against the pre-encryption hash if provided.
+	if oxHex := tagValue(tags, "ox"); oxHex != "" {
+		hash := sha256.Sum256(plaintext)
+
+		if hex.EncodeToString(hash[:]) != oxHex {
+			return errors.New("SHA-256 mismatch after decryption")
+		}
+	}
+
+	if err := os.WriteFile(filePath, plaintext, 0o600); err != nil {
+		return fmt.Errorf("writing decrypted file: %w", err)
+	}
+
+	return nil
+}
+
+// parseDecryptionParams extracts and decodes the AES key and nonce from tags.
+func parseDecryptionParams(tags gonostr.Tags) ([]byte, []byte, error) {
+	keyHex := tagValue(tags, "decryption-key")
+	nonceHex := tagValue(tags, "decryption-nonce")
+
+	if keyHex == "" || nonceHex == "" {
+		return nil, nil, errors.New("missing decryption-key or decryption-nonce tags")
+	}
+
+	key, err := hex.DecodeString(keyHex)
+	if err != nil {
+		return nil, nil, fmt.Errorf("decoding decryption key: %w", err)
+	}
+
+	nonce, err := hex.DecodeString(nonceHex)
+	if err != nil {
+		return nil, nil, fmt.Errorf("decoding decryption nonce: %w", err)
+	}
+
+	return key, nonce, nil
+}
+
+// decryptAESGCM decrypts ciphertext using AES-GCM with the given key and nonce.
+func decryptAESGCM(key, nonce, ciphertext []byte) ([]byte, error) {
+	block, err := aes.NewCipher(key)
+	if err != nil {
+		return nil, fmt.Errorf("creating AES cipher: %w", err)
+	}
+
+	gcm, err := cipher.NewGCMWithNonceSize(block, len(nonce))
+	if err != nil {
+		return nil, fmt.Errorf("creating GCM: %w", err)
+	}
+
+	plaintext, err := gcm.Open(nil, nonce, ciphertext, nil)
+	if err != nil {
+		return nil, fmt.Errorf("AES-GCM decryption: %w", err)
+	}
+
+	return plaintext, nil
+}
+
+// tagValue returns the value of the first tag with the given key, or "".
+func tagValue(tags gonostr.Tags, key string) string {
+	for _, tag := range tags {
+		if len(tag) >= 2 && tag[0] == key {
+			return tag[1]
+		}
+	}
+
+	return ""
+}
+
+// maybeAddExtension renames a file to include a proper extension when the
+// downloaded filename has none and the mime type is known.
+func maybeAddExtension(path string, mimeType string) string {
+	if mimeType == "" || filepath.Ext(path) != "" {
+		return path
+	}
+
+	ext := mimeToExt(mimeType)
+	if ext == "" {
+		return path
+	}
+
+	newPath := path + ext
+	if err := os.Rename(path, newPath); err != nil {
+		slog.Warn("nostr: failed to rename file with extension", "from", path, "to", newPath, "error", err)
+
+		return path
+	}
+
+	return newPath
+}
+
+// descFromMIME returns a human-readable file type description for the
+// attachment message text.
+func descFromMIME(mimeType string) string {
+	switch {
+	case strings.HasPrefix(mimeType, "image/"):
+		return "image"
+	case strings.HasPrefix(mimeType, "audio/"):
+		return "audio"
+	case strings.HasPrefix(mimeType, "video/"):
+		return "video"
+	default:
+		return "file"
+	}
+}
+
+// mimeToExt returns a file extension for a MIME type using the system MIME
+// database (via mime.ExtensionsByType). Returns "" for unknown types.
+func mimeToExt(mimeType string) string {
+	exts, err := mime.ExtensionsByType(mimeType)
+	if err != nil || len(exts) == 0 {
+		return ""
+	}
+
+	return exts[0]
+}
 
 // rewriteMediaURLs finds media URLs in text, downloads them, and rewrites the
 // text with the local file path in the standard attachment format.

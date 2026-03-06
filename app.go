@@ -59,6 +59,10 @@ func NewApp(b backend.Backend, pool *PiPool, triggerMgr *TriggerPipeManager, dat
 // HandleMessage is the backend.MessageHandler callback. It dispatches
 // commands and normal messages.
 func (a *App) HandleMessage(ctx context.Context, msg backend.Message) {
+	// Record the incoming message so future reply-to references can quote it.
+	// Without this, replies to user messages would show "content unavailable".
+	a.sent.Put(msg.ConversationID, msg.MessageID, msg.Text)
+
 	switch msg.Text {
 	case "!restart":
 		a.handleRestart(ctx, msg)
@@ -139,7 +143,7 @@ func (a *App) buildPromptText(msg backend.Message) string {
 
 	if msg.ReplyToID != "" {
 		if quoted := a.sent.Get(msg.ConversationID, msg.ReplyToID); quoted != "" {
-			promptText = fmt.Sprintf("[user replied to your message: %q]\n%s", quoted, promptText)
+			promptText = fmt.Sprintf("[user replied to message: %q]\n%s", quoted, promptText)
 		} else {
 			promptText = "[user replied to a message whose content is unavailable — ask for clarification if their message is unclear]\n" + promptText
 		}
