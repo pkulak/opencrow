@@ -194,7 +194,7 @@ func (h *HeartbeatScheduler) executeHeartbeatPrompt(ctx context.Context, pi *PiP
 // handleHeartbeatError distinguishes user-abort from real failures.
 // Returns true when the heartbeat should be retried later.
 func (h *HeartbeatScheduler) handleHeartbeatError(ctx context.Context, roomID string, err error) bool {
-	if ctx.Err() != nil || strings.Contains(err.Error(), "context cancel") {
+	if ctx.Err() != nil || errors.Is(err, context.Canceled) || errors.Is(err, context.DeadlineExceeded) {
 		slog.Info("heartbeat: aborted by user prompt", "room", roomID)
 
 		return true // skip, don't update lastBeat so we retry
