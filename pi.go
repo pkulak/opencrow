@@ -193,8 +193,11 @@ func (p *PiProcess) Prompt(ctx context.Context, message string, onToolCall ...fu
 	defer p.mu.Unlock()
 
 	// Set tool call callback under lock to avoid racing with heartbeat suppression.
+	// Always overwrite to prevent stale callbacks from prior prompts.
 	if len(onToolCall) > 0 {
 		p.onToolCall = onToolCall[0]
+	} else {
+		p.onToolCall = nil
 	}
 
 	p.lastUse = time.Now()
@@ -226,11 +229,19 @@ func (p *PiProcess) Prompt(ctx context.Context, message string, onToolCall ...fu
 // PromptNoTouch is like Prompt but does not update lastUse.
 // Used for heartbeat prompts so idle reaping still works.
 // Skips if another prompt is currently running (returns ErrBusy).
-func (p *PiProcess) PromptNoTouch(ctx context.Context, message string) (string, error) {
+// An optional onToolCall callback overrides the current callback for this call.
+func (p *PiProcess) PromptNoTouch(ctx context.Context, message string, onToolCall ...func(ToolCallEvent)) (string, error) {
 	if !p.mu.TryLock() {
 		return "", ErrBusy
 	}
 	defer p.mu.Unlock()
+
+	// Override tool-call callback under lock if caller requested suppression.
+	if len(onToolCall) > 0 {
+		savedToolCall := p.onToolCall
+		p.onToolCall = onToolCall[0]
+		defer func() { p.onToolCall = savedToolCall }()
+	}
 
 	if !p.IsAlive() {
 		return "", errors.New("pi process is not alive")
