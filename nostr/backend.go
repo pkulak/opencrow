@@ -175,7 +175,7 @@ func (b *Backend) Run(ctx context.Context) error {
 
 		slog.Debug("nostr: gift wrap received from relay", "relay", ie.Relay.URL, "event_id", ie.ID.Hex())
 		evt := ie.Event
-		b.processGiftWrap(ctx, &evt)
+		b.processGiftWrap(ctx, pubCtx, &evt)
 	}
 
 	return b.drainAndShutdown(ctx, pubCancel, pubDone)
@@ -606,7 +606,7 @@ func (b *Backend) publishToRelays(evt gonostr.Event, relays []string, label stri
 }
 
 // processGiftWrap unwraps a kind 1059 event and dispatches to the handler.
-func (b *Backend) processGiftWrap(ctx context.Context, evt *gonostr.Event) {
+func (b *Backend) processGiftWrap(ctx, pubCtx context.Context, evt *gonostr.Event) {
 	if evt == nil {
 		return
 	}
@@ -640,8 +640,10 @@ func (b *Backend) processGiftWrap(ctx context.Context, evt *gonostr.Event) {
 	slog.Info("nostr: received DM", "sender", senderHex, "kind", rumor.Kind, "len", len(rumor.Content), "tags", len(rumor.Tags))
 
 	// Send a 👍 reaction to acknowledge receipt before processing.
+	// Use pubCtx so the reaction can finish encrypting and enqueueing
+	// even after the subscription context is cancelled by Stop().
 	b.wg.Go(func() {
-		b.sendReaction(ctx, rumor.ID, rumor.PubKey, rumor.Kind)
+		b.sendReaction(pubCtx, rumor.ID, rumor.PubKey, rumor.Kind)
 	})
 
 	var text string
