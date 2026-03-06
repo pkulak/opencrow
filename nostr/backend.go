@@ -15,6 +15,7 @@ import (
 	"os"
 	"path/filepath"
 	"regexp"
+	"strconv"
 	"strings"
 	"sync"
 	"time"
@@ -556,7 +557,7 @@ func (b *Backend) publishDMGiftWraps(ctx context.Context, pool *gonostr.Pool, to
 // sendReaction sends a NIP-25 kind 7 reaction gift-wrapped via NIP-59 to
 // acknowledge receipt of an incoming DM. The reaction references the original
 // rumor by its event ID so the sender's client can attach it to the right message.
-func (b *Backend) sendReaction(ctx context.Context, rumorID gonostr.ID, recipientPK gonostr.PubKey) {
+func (b *Backend) sendReaction(ctx context.Context, rumorID gonostr.ID, recipientPK gonostr.PubKey, rumorKind gonostr.Kind) {
 	rumor := gonostr.Event{
 		Kind:      gonostr.KindReaction,
 		Content:   "👍",
@@ -565,7 +566,7 @@ func (b *Backend) sendReaction(ctx context.Context, rumorID gonostr.ID, recipien
 		Tags: gonostr.Tags{
 			{"e", rumorID.Hex()},
 			{"p", recipientPK.Hex()},
-			{"k", "14"},
+			{"k", strconv.Itoa(int(rumorKind))},
 		},
 	}
 	rumor.ID = rumor.GetID()
@@ -640,7 +641,7 @@ func (b *Backend) processGiftWrap(ctx context.Context, evt *gonostr.Event) {
 
 	// Send a 👍 reaction to acknowledge receipt before processing.
 	b.wg.Go(func() {
-		b.sendReaction(ctx, rumor.ID, rumor.PubKey)
+		b.sendReaction(ctx, rumor.ID, rumor.PubKey, rumor.Kind)
 	})
 
 	var text string
