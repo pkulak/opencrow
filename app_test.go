@@ -145,7 +145,7 @@ func TestApp_BuildPromptText_ReplyToUserMessage(t *testing.T) {
 	}
 
 	got := app.buildPromptText(replyMsg)
-	want := `[user replied to your message: "original question"]
+	want := `[user replied to message: "original question"]
 follow-up`
 
 	if got != want {
