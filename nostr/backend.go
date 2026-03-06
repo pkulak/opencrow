@@ -6,6 +6,9 @@ import (
 	"encoding/json"
 	"fmt"
 	"log/slog"
+	"mime"
+	"os"
+	"path/filepath"
 	"regexp"
 	"strings"
 	"sync"
@@ -603,12 +606,20 @@ func (b *Backend) processGiftWrap(ctx context.Context, evt *gonostr.Event) {
 		return
 	}
 
-	slog.Info("nostr: received DM", "sender", senderHex, "len", len(rumor.Content), "tags", len(rumor.Tags))
+	slog.Info("nostr: received DM", "sender", senderHex, "kind", rumor.Kind, "len", len(rumor.Content), "tags", len(rumor.Tags))
 
 	// Send a 👍 reaction to acknowledge receipt before processing.
 	go b.sendReaction(ctx, rumor.ID, rumor.PubKey)
 
-	text := b.rewriteMediaURLs(ctx, rumor.Content, senderHex)
+	var text string
+
+	if rumor.Kind == KindFileMessage {
+		text = b.handleFileMessage(ctx, rumor, senderHex)
+	} else {
+		// Kind 14 (chat message) or any other kind: treat content as text,
+		// rewriting any inline media URLs to local paths.
+		text = b.rewriteMediaURLs(ctx, rumor.Content, senderHex)
+	}
 
 	b.handler(ctx, backend.Message{
 		ConversationID: senderHex,
@@ -688,7 +699,100 @@ func (b *Backend) claimConversation(senderHex string) bool {
 	return true
 }
 
+// KindFileMessage is the NIP-17 kind for file messages (not yet in go-nostr).
+const KindFileMessage gonostr.Kind = 15
+
 var mediaURLRe = regexp.MustCompile(`(?i)https?://\S+\.(?:png|jpg|jpeg|gif|webp|pdf|mp3|mp4|wav|ogg|svg|bmp|tiff|zip)(?:\?\S*)?`)
+
+// handleFileMessage processes a NIP-17 kind 15 file message. The rumor's
+// content is the file URL and tags carry metadata (file-type, dimensions, etc.).
+// The file is downloaded and the message text is rewritten to reference the
+// local path so pi can read it with its tools.
+func (b *Backend) handleFileMessage(ctx context.Context, rumor gonostr.Event, conversationID string) string {
+	fileURL := strings.TrimSpace(rumor.Content)
+	if fileURL == "" {
+		slog.Warn("nostr: kind 15 file message with empty content", "sender", conversationID)
+
+		return "[User sent a file message with no URL]"
+	}
+
+	mimeType := tagValue(rumor.Tags, "file-type")
+
+	slog.Info("nostr: downloading file message", "url", fileURL, "mime", mimeType, "sender", conversationID)
+
+	localPath, err := downloadURL(ctx, fileURL, b.cfg.SessionBaseDir, conversationID)
+	if err != nil {
+		slog.Warn("nostr: failed to download file message", "url", fileURL, "error", err)
+
+		return fmt.Sprintf("[User sent a file but download failed: %s]", fileURL)
+	}
+
+	// If the downloaded file has no extension, try to add one from the mime type.
+	localPath = maybeAddExtension(localPath, mimeType)
+
+	desc := descFromMIME(mimeType)
+
+	return fmt.Sprintf("[User sent a %s: %s]\nUse the read tool to view it.", desc, localPath)
+}
+
+// tagValue returns the value of the first tag with the given key, or "".
+func tagValue(tags gonostr.Tags, key string) string {
+	for _, tag := range tags {
+		if len(tag) >= 2 && tag[0] == key {
+			return tag[1]
+		}
+	}
+
+	return ""
+}
+
+// maybeAddExtension renames a file to include a proper extension when the
+// downloaded filename has none and the mime type is known.
+func maybeAddExtension(path string, mimeType string) string {
+	if mimeType == "" || filepath.Ext(path) != "" {
+		return path
+	}
+
+	ext := mimeToExt(mimeType)
+	if ext == "" {
+		return path
+	}
+
+	newPath := path + ext
+	if err := os.Rename(path, newPath); err != nil {
+		slog.Warn("nostr: failed to rename file with extension", "from", path, "to", newPath, "error", err)
+
+		return path
+	}
+
+	return newPath
+}
+
+// descFromMIME returns a human-readable file type description for the
+// attachment message text.
+func descFromMIME(mimeType string) string {
+	switch {
+	case strings.HasPrefix(mimeType, "image/"):
+		return "image"
+	case strings.HasPrefix(mimeType, "audio/"):
+		return "audio"
+	case strings.HasPrefix(mimeType, "video/"):
+		return "video"
+	default:
+		return "file"
+	}
+}
+
+// mimeToExt returns a file extension for a MIME type using the system MIME
+// database (via mime.ExtensionsByType). Returns "" for unknown types.
+func mimeToExt(mimeType string) string {
+	exts, err := mime.ExtensionsByType(mimeType)
+	if err != nil || len(exts) == 0 {
+		return ""
+	}
+
+	return exts[0]
+}
 
 // rewriteMediaURLs finds media URLs in text, downloads them, and rewrites the
 // text with the local file path in the standard attachment format.

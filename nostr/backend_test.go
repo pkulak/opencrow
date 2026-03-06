@@ -2,6 +2,9 @@ package nostr
 
 import (
 	"context"
+	"net/http"
+	"net/http/httptest"
+	"strings"
 	"sync"
 	"testing"
 	"time"
@@ -635,6 +638,54 @@ func TestRun_ReplyThreadingSetsReplyToID(t *testing.T) {
 	}
 }
 
+func TestRun_ReceivesFileMessage(t *testing.T) {
+	t.Parallel()
+
+	// Serve a fake image so the download succeeds.
+	imgServer := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, _ *http.Request) {
+		w.Header().Set("Content-Type", "image/jpeg")
+		_, _ = w.Write([]byte("\xff\xd8\xff\xe0fake jpeg"))
+	}))
+	defer imgServer.Close()
+
+	wsURL, cleanup := testutil.StartTestRelay(t)
+	defer cleanup()
+
+	botSK := gonostr.Generate()
+	senderSK := gonostr.Generate()
+
+	c := &messageCollector{}
+	b := newTestBackendWithHandler(t, botSK, []string{wsURL}, nil, c.handler)
+
+	ctx, cancel := context.WithTimeout(context.Background(), 5*time.Second)
+	defer cancel()
+
+	runErr := runBackendAsync(ctx, b)
+
+	time.Sleep(300 * time.Millisecond)
+
+	fileURL := imgServer.URL + "/QmHash123"
+	sendTestFileMessage(ctx, t, wsURL, senderSK, b.keys.PK, fileURL, "image/jpeg")
+	waitForMessages(t, c, 1)
+
+	cancel()
+	<-runErr
+
+	msgs := c.get()
+	if len(msgs) != 1 {
+		t.Fatalf("received %d messages, want 1", len(msgs))
+	}
+
+	// The message text should contain the local file path, not the URL.
+	if strings.Contains(msgs[0].Text, "http") {
+		t.Errorf("message still contains URL: %q", msgs[0].Text)
+	}
+
+	if !strings.Contains(msgs[0].Text, "attachments/") {
+		t.Errorf("message should contain local attachment path, got: %q", msgs[0].Text)
+	}
+}
+
 // --- test helpers ---
 
 // messageCollector collects backend messages in a thread-safe way.
@@ -813,6 +864,54 @@ func sendTestDM(ctx context.Context, t *testing.T, wsURL string, senderSK gonost
 	_, toThem, err := nip17.PrepareMessage(ctx, content, nil, kr, recipientPK, nil)
 	if err != nil {
 		t.Fatalf("preparing DM: %v", err)
+	}
+
+	relay, err := pool.EnsureRelay(wsURL)
+	if err != nil {
+		t.Fatalf("connecting to relay: %v", err)
+	}
+
+	if err := relay.Publish(ctx, toThem); err != nil {
+		t.Fatalf("publishing gift wrap: %v", err)
+	}
+}
+
+// sendTestFileMessage sends a NIP-17 kind 15 file message gift-wrapped to the recipient.
+func sendTestFileMessage(ctx context.Context, t *testing.T, wsURL string, senderSK gonostr.SecretKey, recipientPK gonostr.PubKey, fileURL, mimeType string) {
+	t.Helper()
+
+	pool := gonostr.NewPool(gonostr.PoolOptions{})
+	defer pool.Close("test done")
+
+	kr := keyer.NewPlainKeySigner(senderSK)
+
+	ourPubkey, err := kr.GetPublicKey(ctx)
+	if err != nil {
+		t.Fatalf("getting public key: %v", err)
+	}
+
+	// Build a kind 15 rumor per NIP-17 spec.
+	rumor := gonostr.Event{
+		Kind:      15, // KindFileMessage — not in go-nostr yet
+		Content:   fileURL,
+		CreatedAt: gonostr.Now(),
+		PubKey:    ourPubkey,
+		Tags: gonostr.Tags{
+			{"p", recipientPK.Hex()},
+			{"file-type", mimeType},
+		},
+	}
+	rumor.ID = rumor.GetID()
+
+	toThem, err := nip59.GiftWrap(
+		rumor,
+		recipientPK,
+		func(s string) (string, error) { return kr.Encrypt(ctx, s, recipientPK) },
+		func(e *gonostr.Event) error { return kr.SignEvent(ctx, e) },
+		nil,
+	)
+	if err != nil {
+		t.Fatalf("gift wrapping file message: %v", err)
 	}
 
 	relay, err := pool.EnsureRelay(wsURL)
