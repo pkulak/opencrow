@@ -124,6 +124,8 @@ func (a *App) handlePrompt(ctx context.Context, msg backend.Message) {
 	if msg.ReplyToID != "" {
 		if quoted := a.sent.Get(msg.ConversationID, msg.ReplyToID); quoted != "" {
 			promptText = fmt.Sprintf("[user replied to your message: %q]\n%s", quoted, promptText)
+		} else {
+			promptText = "[user replied to a message whose content is unavailable — ask for clarification if their message is unclear]\n" + promptText
 		}
 	}
 
