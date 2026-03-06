@@ -51,10 +51,17 @@ type publishItem struct {
 type publishQueue struct {
 	mu           sync.Mutex
 	items        []*publishItem
-	flushWaiters []chan struct{} // closed after a drain pass completes
+	flushWaiters []flushWaiter // released once attemptGen advances past their snapshot
+	attemptGen   uint64        // incremented on every drain pass that tries items
 	dataDir      string
 	pool         *gonostr.Pool // set via setPool before calling run
 	wake         chan struct{} // signals the drain loop that new work arrived
+}
+
+// flushWaiter records a waiter and the generation it observed at Flush time.
+type flushWaiter struct {
+	gen uint64
+	ch  chan struct{}
 }
 
 // Len returns the number of items in the queue.
@@ -65,13 +72,13 @@ func (q *publishQueue) Len() int {
 	return len(q.items)
 }
 
-// Flush blocks until all currently-enqueued items have had at least one
-// publish attempt. Intended for tests.
+// Flush blocks until at least one publish attempt pass has occurred since
+// the call to Flush. Intended for tests.
 func (q *publishQueue) Flush(ctx context.Context) {
 	done := make(chan struct{})
 
 	q.mu.Lock()
-	q.flushWaiters = append(q.flushWaiters, done)
+	q.flushWaiters = append(q.flushWaiters, flushWaiter{gen: q.attemptGen, ch: done})
 	q.mu.Unlock()
 
 	q.signal()
@@ -151,8 +158,6 @@ func (q *publishQueue) drainOnce(ctx context.Context) time.Duration {
 	q.mu.Unlock()
 
 	if len(due) == 0 {
-		q.notifyFlush()
-
 		return nextWake
 	}
 
@@ -161,6 +166,7 @@ func (q *publishQueue) drainOnce(ctx context.Context) time.Duration {
 	}
 
 	q.mu.Lock()
+	q.attemptGen++
 	q.cleanupLocked()
 	q.saveLocked()
 	q.mu.Unlock()
@@ -175,16 +181,24 @@ func (q *publishQueue) drainOnce(ctx context.Context) time.Duration {
 	return nextWake
 }
 
-// notifyFlush closes all pending flush waiter channels.
+// notifyFlush releases flush waiters whose snapshot generation has been
+// surpassed by the current attemptGen.
 func (q *publishQueue) notifyFlush() {
 	q.mu.Lock()
-	waiters := q.flushWaiters
-	q.flushWaiters = nil
-	q.mu.Unlock()
+	gen := q.attemptGen
 
-	for _, ch := range waiters {
-		close(ch)
+	var remaining []flushWaiter
+
+	for _, w := range q.flushWaiters {
+		if gen > w.gen {
+			close(w.ch)
+		} else {
+			remaining = append(remaining, w)
+		}
 	}
+
+	q.flushWaiters = remaining
+	q.mu.Unlock()
 }
 
 // collectDueLocked returns items whose NextRetry has passed, and the
