@@ -66,6 +66,10 @@ type Backend struct {
 
 	// Persistent retry queue for failed publishes.
 	pubQueue *publishQueue
+
+	// wg tracks in-flight background goroutines (e.g. reactions) so Run
+	// can wait for them before returning.
+	wg sync.WaitGroup
 }
 
 // NewBackend creates a new Nostr backend. The keys are derived from cfg.PrivateKey.
@@ -145,11 +149,14 @@ func (b *Backend) Run(ctx context.Context) error {
 	// Periodically prune the dedup set so it doesn't grow unbounded.
 	go b.pruneSeenLoop(ctx)
 
-	// Drain the publish queue in the background.
+	// Drain the publish queue in the background. Use a separate context
+	// so the queue keeps running while reaction goroutines finish enqueueing
+	// after the subscription context is cancelled.
+	pubCtx, pubCancel := context.WithCancel(context.Background())
 	pubDone := make(chan struct{})
 
 	go func() {
-		b.pubQueue.run(ctx)
+		b.pubQueue.run(pubCtx)
 		close(pubDone)
 	}()
 
@@ -162,6 +169,16 @@ func (b *Backend) Run(ctx context.Context) error {
 		evt := ie.Event
 		b.processGiftWrap(ctx, &evt)
 	}
+
+	// Wait for in-flight background goroutines (reactions) to finish
+	// enqueueing before stopping the publish queue. Without this,
+	// a reaction goroutine can write to the data directory after Run
+	// returns, racing with cleanup of the session directory.
+	b.wg.Wait()
+
+	// Now cancel the publish queue's context so its drain loop exits
+	// after processing any final items enqueued by the reactions above.
+	pubCancel()
 
 	// Wait for the publish queue goroutine to finish so it doesn't
 	// write to the data directory after Run returns.
@@ -609,7 +626,12 @@ func (b *Backend) processGiftWrap(ctx context.Context, evt *gonostr.Event) {
 	slog.Info("nostr: received DM", "sender", senderHex, "kind", rumor.Kind, "len", len(rumor.Content), "tags", len(rumor.Tags))
 
 	// Send a 👍 reaction to acknowledge receipt before processing.
-	go b.sendReaction(ctx, rumor.ID, rumor.PubKey)
+	b.wg.Add(1)
+
+	go func() {
+		defer b.wg.Done()
+		b.sendReaction(ctx, rumor.ID, rumor.PubKey)
+	}()
 
 	var text string
 
