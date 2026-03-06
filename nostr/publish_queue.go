@@ -228,7 +228,10 @@ func (q *publishQueue) collectDueLocked() ([]*publishItem, time.Duration) {
 
 // tryItem attempts to publish the event to its remaining failed relays.
 func (q *publishQueue) tryItem(ctx context.Context, item *publishItem) {
-	var stillFailed []string
+	var (
+		stillFailed []string
+		delivered   bool
+	)
 
 	for _, relayURL := range item.FailedRelays {
 		if err := q.publishToRelay(ctx, relayURL, item.Event); err != nil {
@@ -256,11 +259,12 @@ func (q *publishQueue) tryItem(ctx context.Context, item *publishItem) {
 				"attempt", item.Attempts+1,
 			)
 
-			item.Delivered = true
+			delivered = true
 		}
 	}
 
 	q.mu.Lock()
+	item.Delivered = item.Delivered || delivered
 	item.FailedRelays = stillFailed
 	item.Attempts++
 	item.NextRetry = time.Now().Add(calcBackoff(item.Attempts))
