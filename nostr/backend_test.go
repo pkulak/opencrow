@@ -34,7 +34,7 @@ func TestSendMessage_PublishesGiftWrap(t *testing.T) {
 	b.pool = pool
 	b.kr = kr
 
-	b.SendMessage(ctx, recipientPK.Hex(), "hello from bot")
+	b.SendMessage(ctx, recipientPK.Hex(), "hello from bot", "")
 
 	events := pool.FetchMany(ctx, []string{wsURL}, gonostr.Filter{
 		Kinds: []gonostr.Kind{gonostr.KindGiftWrap},
@@ -550,7 +550,7 @@ func TestSendReaction_DisallowedUserNoReaction(t *testing.T) {
 	}
 }
 
-func TestRun_ReplyThreadingPrependsMarker(t *testing.T) {
+func TestRun_ReplyThreadingSetsReplyToID(t *testing.T) {
 	t.Parallel()
 
 	wsURL, cleanup := testutil.StartTestRelay(t)
@@ -581,9 +581,12 @@ func TestRun_ReplyThreadingPrependsMarker(t *testing.T) {
 		t.Fatalf("received %d messages, want 1", len(msgs))
 	}
 
-	want := "[nostr:reply-to:original123]\nthis is a reply"
-	if msgs[0].Text != want {
-		t.Errorf("Text = %q, want %q", msgs[0].Text, want)
+	if msgs[0].Text != "this is a reply" {
+		t.Errorf("Text = %q, want %q", msgs[0].Text, "this is a reply")
+	}
+
+	if msgs[0].ReplyToID != "original123" {
+		t.Errorf("ReplyToID = %q, want %q", msgs[0].ReplyToID, "original123")
 	}
 }
 

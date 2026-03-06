@@ -13,10 +13,12 @@ type Backend interface {
 	Stop()
 	// Close releases resources (crypto DB, relay connections).
 	Close() error
-	// SendMessage sends a text message to a conversation. Errors are logged
-	// but do not propagate — the caller treats message sending as
+	// SendMessage sends a text message to a conversation. replyToID is an
+	// optional backend-specific message identifier; when non-empty, the
+	// message is sent as a reply to the referenced message. Errors are
+	// logged but do not propagate — the caller treats sending as
 	// fire-and-forget.
-	SendMessage(ctx context.Context, conversationID string, text string)
+	SendMessage(ctx context.Context, conversationID string, text string, replyToID string)
 	// SendFile uploads and sends a file to a conversation.
 	// Returns an error so the caller can append failure info to the reply.
 	SendFile(ctx context.Context, conversationID string, filePath string) error
@@ -35,6 +37,7 @@ type Message struct {
 	ConversationID string // room ID, DM pubkey, channel ID — opaque to the core
 	SenderID       string // user ID / pubkey
 	Text           string // message text (or synthesized "[User sent file: ...]")
+	ReplyToID      string // backend-specific ID of the message being replied to (empty if not a reply)
 }
 
 // MessageHandler is a callback invoked by the backend for each inbound user message.

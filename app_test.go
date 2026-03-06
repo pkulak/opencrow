@@ -37,7 +37,7 @@ func (m *mockBackend) Run(_ context.Context) error { return nil }
 func (m *mockBackend) Stop()                       {}
 func (m *mockBackend) Close() error                { return nil }
 
-func (m *mockBackend) SendMessage(_ context.Context, conversationID string, text string) {
+func (m *mockBackend) SendMessage(_ context.Context, conversationID string, text string, _ string) {
 	m.mu.Lock()
 	defer m.mu.Unlock()
 

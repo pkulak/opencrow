@@ -315,13 +315,20 @@ func (b *Backend) Close() error {
 	return nil
 }
 
-// SendMessage sends a NIP-17 gift-wrapped DM. Fire-and-forget.
-func (b *Backend) SendMessage(ctx context.Context, conversationID string, text string) {
+// SendMessage sends a NIP-17 gift-wrapped DM. When replyToID is non-empty,
+// an "e" tag referencing that event is included in the rumor so the
+// recipient's client can display threading. Fire-and-forget.
+func (b *Backend) SendMessage(ctx context.Context, conversationID string, text string, replyToID string) {
 	recipientPK, err := gonostr.PubKeyFromHex(conversationID)
 	if err != nil {
 		slog.Error("nostr: invalid recipient pubkey", "conversationID", conversationID, "error", err)
 
 		return
+	}
+
+	var extraTags gonostr.Tags
+	if replyToID != "" {
+		extraTags = gonostr.Tags{{"e", replyToID}}
 	}
 
 	if b.kr == nil {
@@ -330,12 +337,12 @@ func (b *Backend) SendMessage(ctx context.Context, conversationID string, text s
 		defer pool.Close("temporary pool done")
 
 		kr := keyer.NewPlainKeySigner(b.keys.SK)
-		b.sendDM(ctx, kr, pool, recipientPK, text)
+		b.sendDM(ctx, kr, pool, recipientPK, text, extraTags)
 
 		return
 	}
 
-	b.sendDM(ctx, b.kr, b.pool, recipientPK, text)
+	b.sendDM(ctx, b.kr, b.pool, recipientPK, text, extraTags)
 }
 
 // SendFile uploads a file to Blossom and sends the URL as a DM.
@@ -345,7 +352,7 @@ func (b *Backend) SendFile(ctx context.Context, conversationID string, filePath 
 		return err
 	}
 
-	b.SendMessage(ctx, conversationID, url)
+	b.SendMessage(ctx, conversationID, url, "")
 
 	return nil
 }
@@ -374,12 +381,7 @@ in your response with the absolute path to the file:
 <sendfile>/path/to/file.png</sendfile>
 
 The bot will upload the file to a Blossom server and send the URL in a DM.
-You can include multiple <sendfile> tags in a single response.
-
-## Reply threading
-
-When a user replies to a specific message in their Nostr client, the incoming
-message is prefixed with a [nostr:reply-to:<event-id>] marker.`
+You can include multiple <sendfile> tags in a single response.`
 
 	if len(b.cfg.BlossomServers) > 0 {
 		extra += fmt.Sprintf("\n\nBlossom servers: %v", b.cfg.BlossomServers)
@@ -427,8 +429,8 @@ func (b *Backend) pruneSeen() {
 	b.seenRumorsMu.Unlock()
 }
 
-func (b *Backend) sendDM(ctx context.Context, kr gonostr.Keyer, pool *gonostr.Pool, recipientPK gonostr.PubKey, text string) {
-	toUs, toThem, err := nip17.PrepareMessage(ctx, text, nil, kr, recipientPK, nil)
+func (b *Backend) sendDM(ctx context.Context, kr gonostr.Keyer, pool *gonostr.Pool, recipientPK gonostr.PubKey, text string, extraTags gonostr.Tags) {
+	toUs, toThem, err := nip17.PrepareMessage(ctx, text, extraTags, kr, recipientPK, nil)
 	if err != nil {
 		slog.Error("nostr: failed to prepare DM", "recipient", recipientPK.Hex(), "error", err)
 
@@ -558,15 +560,11 @@ func (b *Backend) processGiftWrap(ctx context.Context, evt *gonostr.Event) {
 
 	text := b.rewriteMediaURLs(ctx, rumor.Content, senderHex)
 
-	// If the rumor has an "e" tag, the user is replying to a previous message.
-	if replyID := rumorReplyTarget(rumor); replyID != "" {
-		text = fmt.Sprintf("[nostr:reply-to:%s]\n%s", replyID, text)
-	}
-
 	b.handler(ctx, backend.Message{
 		ConversationID: senderHex,
 		SenderID:       senderHex,
 		Text:           text,
+		ReplyToID:      rumorReplyTarget(rumor),
 	})
 }
 

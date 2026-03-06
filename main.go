@@ -93,13 +93,13 @@ func createBackend(cfg *Config, pool *PiPool, handler backend.MessageHandler) (b
 
 func startSchedulers(ctx context.Context, cfg *Config, pool *PiPool, b backend.Backend, app *App) {
 	hb := NewHeartbeatScheduler(pool, cfg.Pi, cfg.Heartbeat, func(ctx context.Context, roomID string, text string) {
-		b.SendMessage(ctx, roomID, text)
+		b.SendMessage(ctx, roomID, text, "")
 	})
 	hb.Start(ctx)
 
 	triggerMgr := NewTriggerPipeManager(pool, cfg.Pi, defaultTriggerPrompt,
 		func(ctx context.Context, roomID string, text string) {
-			b.SendMessage(ctx, roomID, text)
+			b.SendMessage(ctx, roomID, text, "")
 		},
 		func(ctx context.Context, roomID string, typing bool) {
 			b.SetTyping(ctx, roomID, typing)

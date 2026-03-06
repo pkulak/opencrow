@@ -71,25 +71,25 @@ func (a *App) HandleMessage(ctx context.Context, msg backend.Message) {
 func (a *App) handleRestart(ctx context.Context, msg backend.Message) {
 	a.backend.ResetConversation(ctx, msg.ConversationID)
 	a.pool.Remove(msg.ConversationID)
-	a.backend.SendMessage(ctx, msg.ConversationID, "Session restarted. Next message will use a fresh process.")
+	a.backend.SendMessage(ctx, msg.ConversationID, "Session restarted. Next message will use a fresh process.", "")
 }
 
 func (a *App) handleStop(ctx context.Context, msg backend.Message) {
 	pi, err := a.pool.Get(ctx, msg.ConversationID)
 	if err != nil {
-		a.backend.SendMessage(ctx, msg.ConversationID, "No active session.")
+		a.backend.SendMessage(ctx, msg.ConversationID, "No active session.", "")
 		return
 	}
 
 	if pi.Abort() {
-		a.backend.SendMessage(ctx, msg.ConversationID, "Aborted current operation.")
+		a.backend.SendMessage(ctx, msg.ConversationID, "Aborted current operation.", "")
 	} else {
-		a.backend.SendMessage(ctx, msg.ConversationID, "Nothing running to stop.")
+		a.backend.SendMessage(ctx, msg.ConversationID, "Nothing running to stop.", "")
 	}
 }
 
 func (a *App) handleSkills(ctx context.Context, msg backend.Message) {
-	a.backend.SendMessage(ctx, msg.ConversationID, a.pool.SkillsSummary())
+	a.backend.SendMessage(ctx, msg.ConversationID, a.pool.SkillsSummary(), "")
 }
 
 func (a *App) handlePrompt(ctx context.Context, msg backend.Message) {
@@ -99,7 +99,7 @@ func (a *App) handlePrompt(ctx context.Context, msg backend.Message) {
 	pi, err := a.pool.Get(ctx, msg.ConversationID)
 	if err != nil {
 		slog.Error("failed to get pi process", "conversation", msg.ConversationID, "error", err)
-		a.backend.SendMessage(ctx, msg.ConversationID, fmt.Sprintf("Error starting AI backend: %v", err))
+		a.backend.SendMessage(ctx, msg.ConversationID, fmt.Sprintf("Error starting AI backend: %v", err), "")
 
 		return
 	}
@@ -112,7 +112,7 @@ func (a *App) handlePrompt(ctx context.Context, msg backend.Message) {
 	if a.pool.cfg.ShowToolCalls {
 		toolCallFn = func(evt ToolCallEvent) {
 			text := formatToolCall(evt)
-			a.backend.SendMessage(ctx, msg.ConversationID, text)
+			a.backend.SendMessage(ctx, msg.ConversationID, text, "")
 		}
 	}
 
@@ -158,7 +158,7 @@ func (a *App) handlePrompt(ctx context.Context, msg backend.Message) {
 	cleanReply += fileSendErrors.String()
 
 	if cleanReply != "" {
-		a.backend.SendMessage(ctx, msg.ConversationID, cleanReply)
+		a.backend.SendMessage(ctx, msg.ConversationID, cleanReply, msg.ReplyToID)
 	}
 }
 
