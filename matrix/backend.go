@@ -143,10 +143,12 @@ func (b *Backend) Close() error {
 
 // SendMessage sends a text message to a Matrix room. When replyToID is
 // non-empty, the first chunk is sent as a reply to that event.
-// Fire-and-forget.
-func (b *Backend) SendMessage(ctx context.Context, conversationID string, text string, replyToID string) {
+// Returns the event ID of the last sent chunk (or "" on failure).
+func (b *Backend) SendMessage(ctx context.Context, conversationID string, text string, replyToID string) string {
 	roomID := id.RoomID(conversationID)
 	firstChunk := true
+
+	var lastEventID string
 
 	for len(text) > 0 {
 		chunk := text
@@ -170,13 +172,17 @@ func (b *Backend) SendMessage(ctx context.Context, conversationID string, text s
 
 		firstChunk = false
 
-		_, err := b.client.SendMessageEvent(ctx, roomID, event.EventMessage, &content)
+		resp, err := b.client.SendMessageEvent(ctx, roomID, event.EventMessage, &content)
 		if err != nil {
 			slog.Error("failed to send message", "room", roomID, "error", err)
 
-			return
+			return lastEventID
 		}
+
+		lastEventID = string(resp.EventID)
 	}
+
+	return lastEventID
 }
 
 // SendFile uploads and sends a file to a Matrix room.

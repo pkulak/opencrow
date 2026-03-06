@@ -317,13 +317,13 @@ func (b *Backend) Close() error {
 
 // SendMessage sends a NIP-17 gift-wrapped DM. When replyToID is non-empty,
 // an "e" tag referencing that event is included in the rumor so the
-// recipient's client can display threading. Fire-and-forget.
-func (b *Backend) SendMessage(ctx context.Context, conversationID string, text string, replyToID string) {
+// recipient's client can display threading. Returns the rumor event ID.
+func (b *Backend) SendMessage(ctx context.Context, conversationID string, text string, replyToID string) string {
 	recipientPK, err := gonostr.PubKeyFromHex(conversationID)
 	if err != nil {
 		slog.Error("nostr: invalid recipient pubkey", "conversationID", conversationID, "error", err)
 
-		return
+		return ""
 	}
 
 	var extraTags gonostr.Tags
@@ -337,12 +337,11 @@ func (b *Backend) SendMessage(ctx context.Context, conversationID string, text s
 		defer pool.Close("temporary pool done")
 
 		kr := keyer.NewPlainKeySigner(b.keys.SK)
-		b.sendDM(ctx, kr, pool, recipientPK, text, extraTags)
 
-		return
+		return b.sendDM(ctx, kr, pool, recipientPK, text, extraTags)
 	}
 
-	b.sendDM(ctx, b.kr, b.pool, recipientPK, text, extraTags)
+	return b.sendDM(ctx, b.kr, b.pool, recipientPK, text, extraTags)
 }
 
 // SendFile uploads a file to Blossom and sends the URL as a DM.
@@ -429,19 +428,72 @@ func (b *Backend) pruneSeen() {
 	b.seenRumorsMu.Unlock()
 }
 
-func (b *Backend) sendDM(ctx context.Context, kr gonostr.Keyer, pool *gonostr.Pool, recipientPK gonostr.PubKey, text string, extraTags gonostr.Tags) {
-	toUs, toThem, err := nip17.PrepareMessage(ctx, text, extraTags, kr, recipientPK, nil)
+func (b *Backend) sendDM(ctx context.Context, kr gonostr.Keyer, pool *gonostr.Pool, recipientPK gonostr.PubKey, text string, extraTags gonostr.Tags) string {
+	rumor, err := b.buildDMRumor(ctx, kr, recipientPK, text, extraTags)
 	if err != nil {
-		slog.Error("nostr: failed to prepare DM", "recipient", recipientPK.Hex(), "error", err)
+		slog.Error("nostr: failed to build DM rumor", "recipient", recipientPK.Hex(), "error", err)
 
-		return
+		return ""
 	}
 
+	toUs, err := nip59.GiftWrap(rumor, rumor.PubKey,
+		func(s string) (string, error) { return kr.Encrypt(ctx, s, rumor.PubKey) },
+		func(e *gonostr.Event) error { return kr.SignEvent(ctx, e) },
+		nil,
+	)
+	if err != nil {
+		slog.Error("nostr: failed to gift-wrap DM (toUs)", "recipient", recipientPK.Hex(), "error", err)
+
+		return ""
+	}
+
+	toThem, err := nip59.GiftWrap(rumor, recipientPK,
+		func(s string) (string, error) { return kr.Encrypt(ctx, s, recipientPK) },
+		func(e *gonostr.Event) error { return kr.SignEvent(ctx, e) },
+		nil,
+	)
+	if err != nil {
+		slog.Error("nostr: failed to gift-wrap DM (toThem)", "recipient", recipientPK.Hex(), "error", err)
+
+		return ""
+	}
+
+	b.publishDMGiftWraps(ctx, pool, toUs, toThem, recipientPK)
+
+	return rumor.ID.Hex()
+}
+
+// buildDMRumor constructs and returns a kind 14 rumor event for a DM.
+func (b *Backend) buildDMRumor(ctx context.Context, kr gonostr.Keyer, recipientPK gonostr.PubKey, text string, extraTags gonostr.Tags) (gonostr.Event, error) {
+	ourPubkey, err := kr.GetPublicKey(ctx)
+	if err != nil {
+		return gonostr.Event{}, fmt.Errorf("getting public key: %w", err)
+	}
+
+	tags := make(gonostr.Tags, 0, len(extraTags)+1)
+	tags = append(tags, extraTags...)
+	tags = append(tags, gonostr.Tag{"p", recipientPK.Hex()})
+
+	rumor := gonostr.Event{
+		Kind:      gonostr.KindDirectMessage,
+		Content:   text,
+		Tags:      tags,
+		CreatedAt: gonostr.Now(),
+		PubKey:    ourPubkey,
+	}
+	rumor.ID = rumor.GetID()
+
+	return rumor, nil
+}
+
+// publishDMGiftWraps publishes the two gift-wrap copies to the appropriate relays.
+func (b *Backend) publishDMGiftWraps(ctx context.Context, pool *gonostr.Pool, toUs, toThem gonostr.Event, recipientPK gonostr.PubKey) {
 	// Publish our copy to our DM relays.
 	for _, relayURL := range b.cfg.DMRelays {
 		r, err := pool.EnsureRelay(relayURL)
 		if err != nil {
 			slog.Warn("nostr: failed to connect to relay", "relay", relayURL, "error", err)
+
 			continue
 		}
 
@@ -462,6 +514,7 @@ func (b *Backend) sendDM(ctx context.Context, kr gonostr.Keyer, pool *gonostr.Po
 		r, err := pool.EnsureRelay(relayURL)
 		if err != nil {
 			slog.Warn("nostr: failed to connect to relay", "relay", relayURL, "error", err)
+
 			continue
 		}
 

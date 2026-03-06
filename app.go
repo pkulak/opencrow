@@ -42,14 +42,17 @@ type App struct {
 	backend    backend.Backend
 	pool       *PiPool
 	triggerMgr *TriggerPipeManager
+	sent       *sentMessageStore
 }
 
-// NewApp creates a new App. The triggerMgr may be nil if not used.
-func NewApp(b backend.Backend, pool *PiPool, triggerMgr *TriggerPipeManager) *App {
+// NewApp creates a new App. dataDir is used for persistent state (e.g.,
+// sent message store). The triggerMgr may be nil if not used.
+func NewApp(b backend.Backend, pool *PiPool, triggerMgr *TriggerPipeManager, dataDir string) *App {
 	return &App{
 		backend:    b,
 		pool:       pool,
 		triggerMgr: triggerMgr,
+		sent:       newSentMessageStore(dataDir),
 	}
 }
 
@@ -116,7 +119,15 @@ func (a *App) handlePrompt(ctx context.Context, msg backend.Message) {
 		}
 	}
 
-	reply, err := pi.Prompt(ctx, msg.Text, toolCallFn)
+	promptText := msg.Text
+
+	if msg.ReplyToID != "" {
+		if quoted := a.sent.Get(msg.ConversationID, msg.ReplyToID); quoted != "" {
+			promptText = fmt.Sprintf("[user replied to your message: %q]\n%s", quoted, promptText)
+		}
+	}
+
+	reply, err := pi.Prompt(ctx, promptText, toolCallFn)
 	if err != nil {
 		slog.Error("pi prompt failed", "conversation", msg.ConversationID, "error", err)
 		a.pool.Remove(msg.ConversationID)
@@ -158,7 +169,8 @@ func (a *App) handlePrompt(ctx context.Context, msg backend.Message) {
 	cleanReply += fileSendErrors.String()
 
 	if cleanReply != "" {
-		a.backend.SendMessage(ctx, msg.ConversationID, cleanReply, msg.ReplyToID)
+		sentID := a.backend.SendMessage(ctx, msg.ConversationID, cleanReply, msg.ReplyToID)
+		a.sent.Put(msg.ConversationID, sentID, cleanReply)
 	}
 }
 

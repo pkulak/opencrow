@@ -72,7 +72,7 @@ func wireServices(ctx context.Context, cfg *Config, pool *PiPool) (backend.Backe
 		return nil, nil, err
 	}
 
-	app = NewApp(b, pool, nil)
+	app = NewApp(b, pool, nil, cfg.Pi.SessionDir)
 	cfg.Pi.SystemPrompt = app.systemPrompt(cfg.Pi.SystemPrompt)
 
 	startSchedulers(ctx, cfg, pool, b, app)

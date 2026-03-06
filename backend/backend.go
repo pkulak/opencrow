@@ -15,10 +15,11 @@ type Backend interface {
 	Close() error
 	// SendMessage sends a text message to a conversation. replyToID is an
 	// optional backend-specific message identifier; when non-empty, the
-	// message is sent as a reply to the referenced message. Errors are
-	// logged but do not propagate — the caller treats sending as
-	// fire-and-forget.
-	SendMessage(ctx context.Context, conversationID string, text string, replyToID string)
+	// message is sent as a reply to the referenced message. Returns the
+	// backend-specific ID of the sent message (or "" on failure).
+	// Errors are logged but do not propagate — the caller treats sending
+	// as fire-and-forget.
+	SendMessage(ctx context.Context, conversationID string, text string, replyToID string) string
 	// SendFile uploads and sends a file to a conversation.
 	// Returns an error so the caller can append failure info to the reply.
 	SendFile(ctx context.Context, conversationID string, filePath string) error
