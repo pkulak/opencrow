@@ -11,7 +11,7 @@ import (
 )
 
 const (
-	maxSentMessagesPerConversation = 100
+	maxSentMessagesPerConversation = 500
 	sentMessagesFile               = ".sent_messages.json"
 )
 
