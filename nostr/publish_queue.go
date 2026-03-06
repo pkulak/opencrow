@@ -343,8 +343,13 @@ func (q *publishQueue) load() {
 	}
 
 	data, err := os.ReadFile(filepath.Join(q.dataDir, publishQueueFile))
-	if err != nil {
+	if os.IsNotExist(err) {
 		return
+	}
+
+	if err != nil {
+		slog.Error("nostr: failed to read publish queue, refusing to start with potentially lost data", "error", err)
+		os.Exit(1)
 	}
 
 	var items []*publishItem
