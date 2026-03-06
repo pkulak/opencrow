@@ -68,18 +68,28 @@ func saveSeenRumors(baseDir string, seen map[string]time.Time) {
 	}
 }
 
-// sinceFromSeenRumors returns the oldest processing time in the set,
-// minus a safety margin. If the set is empty, returns now - maxAge.
-func sinceFromSeenRumors(seen map[string]time.Time, maxAge time.Duration) gonostr.Timestamp {
-	oldest := time.Now()
+// nip59SafetyMargin accounts for NIP-59's randomized created_at timestamps
+// which may be up to 2 days in the past. We add an extra day of margin.
+const nip59SafetyMargin = 3 * 24 * time.Hour
+
+// sinceFromSeenRumors returns a subscription start time based on the newest
+// processed rumor. We go back by nip59SafetyMargin from the newest entry to
+// account for NIP-59's randomized created_at. If the set is empty, returns
+// now minus the safety margin.
+func sinceFromSeenRumors(seen map[string]time.Time) gonostr.Timestamp {
+	newest := time.Time{}
+
 	for _, t := range seen {
-		if t.Before(oldest) {
-			oldest = t
+		if t.After(newest) {
+			newest = t
 		}
 	}
 
-	// Go back maxAge from the oldest entry (or from now if empty)
-	since := oldest.Add(-maxAge)
+	if newest.IsZero() {
+		newest = time.Now()
+	}
+
+	since := newest.Add(-nip59SafetyMargin)
 
 	return max(gonostr.Timestamp(since.Unix()), 0)
 }

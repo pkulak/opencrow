@@ -138,7 +138,7 @@ func (b *Backend) Run(ctx context.Context) error {
 	// they don't know the recipient's, so we need to listen on those too.
 	subRelays := b.discoverSubscriptionRelays(ctx)
 
-	since := sinceFromSeenRumors(b.seenRumors, b.seenTTL)
+	since := sinceFromSeenRumors(b.seenRumors)
 
 	slog.Info("nostr: subscribing to DMs", "pubkey", b.keys.PK.Hex(), "since", since, "seen_rumors", len(b.seenRumors), "relays", subRelays)
 
