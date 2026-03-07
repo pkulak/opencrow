@@ -9,6 +9,13 @@ let
   cfg = config.services.opencrow;
   opencrowPkg = cfg.package;
 
+  # Assemble all declared skills into a single directory.
+  # Each skill is symlinked by its name, producing a flat
+  # layout that OPENCROW_PI_SKILLS_DIR can scan.
+  skillsDir = pkgs.linkFarm "opencrow-skills" (
+    lib.mapAttrsToList (name: path: { inherit name path; }) cfg.skills
+  );
+
   # Host-side wrapper to run pi inside the container as the opencrow user,
   # e.g. `opencrow-pi auth login` to complete OAuth.
   opencrowPi = pkgs.writeShellScriptBin "opencrow-pi" ''
@@ -34,6 +41,27 @@ in
       type = lib.types.package;
       description = "The pi coding agent package. Required — typically from llm-agents.nix or similar.";
       example = lib.literalExpression "llm-agents.packages.\${system}.pi";
+    };
+
+    skills = lib.mkOption {
+      type = lib.types.attrsOf lib.types.path;
+      default = {
+        web = "${opencrowPkg}/share/opencrow/skills/web";
+      };
+      defaultText = lib.literalExpression ''{ web = "''${opencrowPkg}/share/opencrow/skills/web"; }'';
+      description = ''
+        Skill directories to make available to pi, keyed by name. Each
+        value must be a path to a directory containing a SKILL.md file.
+        All skills are assembled into a single directory and passed via
+        OPENCROW_PI_SKILLS_DIR.
+      '';
+      example = lib.literalExpression ''
+        {
+          web = "''${opencrowPkg}/share/opencrow/skills/web";
+          my-custom-skill = ./my-custom-skill;
+          kagi-search = "''${pkgs.fetchFromGitHub { owner = "someone"; repo = "pi-skills"; rev = "main"; hash = "..."; }}/kagi-search";
+        }
+      '';
     };
 
     environmentFiles = lib.mkOption {
@@ -213,14 +241,15 @@ in
 
           OPENCROW_PI_SKILLS = lib.mkOption {
             type = lib.types.str;
-            default = "${opencrowPkg}/share/opencrow/skills/web";
-            description = "Comma-separated list of skill paths to pass to pi via --skill.";
+            default = "";
+            description = "Comma-separated list of additional skill paths to pass to pi via --skill. Prefer using the top-level `skills` option instead.";
           };
 
           OPENCROW_PI_SKILLS_DIR = lib.mkOption {
             type = lib.types.str;
-            default = "";
-            description = "Directory to scan for skill subdirectories (each must contain SKILL.md). Discovered skills are merged with OPENCROW_PI_SKILLS.";
+            default = toString skillsDir;
+            defaultText = lib.literalExpression ''"''${skillsDir}"'';
+            description = "Directory to scan for skill subdirectories (each must contain SKILL.md). Automatically populated from the `skills` option.";
           };
 
           OPENCROW_SOUL_FILE = lib.mkOption {
