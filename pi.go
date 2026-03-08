@@ -11,6 +11,7 @@ import (
 	"os"
 	"os/exec"
 	"path/filepath"
+	"slices"
 	"strings"
 	"sync"
 	"time"
@@ -575,12 +576,12 @@ func extractLastAssistantText(messagesRaw json.RawMessage) string {
 	}
 
 	// Walk backwards — the last assistant message might be tool-use only.
-	for i := len(messages) - 1; i >= 0; i-- {
-		if messages[i].Role != "assistant" {
+	for _, msg := range slices.Backward(messages) {
+		if msg.Role != "assistant" {
 			continue
 		}
 
-		if text := parseAssistantContent(messages[i].Content); text != "" {
+		if text := parseAssistantContent(msg.Content); text != "" {
 			return text
 		}
 	}

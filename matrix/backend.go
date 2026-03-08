@@ -158,7 +158,7 @@ func (b *Backend) SendMessage(ctx context.Context, conversationID string, text s
 		chunk := text
 		if len(chunk) > maxMessageLen {
 			cutoff := maxMessageLen
-			if idx := lastNewline(chunk[:cutoff]); idx > 0 {
+			if idx := strings.LastIndexByte(chunk[:cutoff], '\n'); idx > 0 {
 				cutoff = idx + 1
 			}
 
@@ -362,6 +362,9 @@ func (b *Backend) ensureCrossSigning(ctx context.Context) error {
 		return fmt.Errorf("generating cross-signing keys: %w", err)
 	}
 
+	// The recovery key ends up in journald, but so do pi's plaintext
+	// session files — filesystem access already implies full message
+	// access regardless.
 	slog.Info("cross-signing setup complete, store this recovery key securely", "recovery_key", recoveryKey)
 
 	return nil
@@ -606,10 +609,14 @@ func (b *Backend) downloadAttachment(ctx context.Context, msg *event.MessageEven
 	switch {
 	case encrypted:
 		if err := b.downloadEncrypted(ctx, mxcURL, msg, destPath); err != nil {
+			os.Remove(destPath)
+
 			return "", err
 		}
 	default:
 		if err := b.downloadPlain(ctx, mxcURL, destPath); err != nil {
+			os.Remove(destPath)
+
 			return "", err
 		}
 	}
@@ -631,7 +638,9 @@ func attachmentURL(msg *event.MessageEventContent) (id.ContentURIString, bool) {
 	}
 }
 
-// attachmentDestPath builds the local filesystem path for a downloaded attachment.
+// attachmentDestPath creates a unique file path for a downloaded attachment.
+// It uses os.CreateTemp to avoid collisions when multiple attachments share
+// the same filename.
 func attachmentDestPath(sessionBaseDir string, msg *event.MessageEventContent) (string, error) {
 	downloadDir := filepath.Join(sessionBaseDir, "attachments")
 	if err := os.MkdirAll(downloadDir, 0o755); err != nil {
@@ -649,14 +658,44 @@ func attachmentDestPath(sessionBaseDir string, msg *event.MessageEventContent) (
 
 	filename = filepath.Base(filename)
 
-	return filepath.Join(downloadDir, filename), nil
+	ext := filepath.Ext(filename)
+	base := strings.TrimSuffix(filename, ext)
+	pattern := base + "_*" + ext
+
+	f, err := os.CreateTemp(downloadDir, pattern)
+	if err != nil {
+		return "", fmt.Errorf("creating attachment file: %w", err)
+	}
+
+	if err := f.Close(); err != nil {
+		os.Remove(f.Name())
+
+		return "", fmt.Errorf("closing attachment file: %w", err)
+	}
+
+	return f.Name(), nil
 }
+
+// maxDownloadSize caps the amount of data we download for a single attachment.
+// 50 MiB is generous for images and documents while preventing abuse from
+// multi-gigabyte payloads that could exhaust disk space or memory.
+const maxDownloadSize = 50 << 20 // 50 MiB
 
 // downloadEncrypted downloads and decrypts an encrypted Matrix attachment.
 func (b *Backend) downloadEncrypted(ctx context.Context, mxcURL id.ContentURI, msg *event.MessageEventContent, destPath string) error {
-	ciphertext, err := b.client.DownloadBytes(ctx, mxcURL)
+	resp, err := b.client.Download(ctx, mxcURL)
 	if err != nil {
 		return fmt.Errorf("downloading encrypted media: %w", err)
+	}
+	defer resp.Body.Close()
+
+	ciphertext, err := io.ReadAll(io.LimitReader(resp.Body, maxDownloadSize+1))
+	if err != nil {
+		return fmt.Errorf("reading encrypted media: %w", err)
+	}
+
+	if len(ciphertext) > maxDownloadSize {
+		return fmt.Errorf("encrypted attachment exceeds maximum size of %d bytes", maxDownloadSize)
 	}
 
 	if err := msg.File.DecryptInPlace(ciphertext); err != nil {
@@ -688,19 +727,20 @@ func (b *Backend) downloadPlain(ctx context.Context, mxcURL id.ContentURI, destP
 	}
 	defer f.Close()
 
-	if _, err := io.Copy(f, resp.Body); err != nil {
+	limited := io.LimitReader(resp.Body, maxDownloadSize+1)
+
+	n, err := io.Copy(f, limited)
+	if err != nil {
 		return fmt.Errorf("writing file: %w", err)
+	}
+
+	if n > maxDownloadSize {
+		f.Close()
+		os.Remove(destPath)
+
+		return fmt.Errorf("attachment exceeds maximum size of %d bytes", maxDownloadSize)
 	}
 
 	return nil
 }
 
-func lastNewline(s string) int {
-	for i := len(s) - 1; i >= 0; i-- {
-		if s[i] == '\n' {
-			return i
-		}
-	}
-
-	return -1
-}

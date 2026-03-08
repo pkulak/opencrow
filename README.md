@@ -268,6 +268,14 @@ echo "New email from alice@example.com" > /var/lib/opencrow/sessions/trigger.pip
 
 Each line written to the pipe is processed as a separate trigger.
 
+> [!CAUTION]
+> The trigger pipe is an **unauthenticated** input channel. Any process that can
+> write to the FIFO can inject arbitrary prompts into `pi`, which has full tool
+> access (shell commands, file I/O, network). This is by design — the pipe is
+> meant for trusted local automation (cron, webhooks, mail watchers). The FIFO
+> is created with mode `0664`, so any process in the `opencrow` group can write
+> to it. Make sure only trusted services are members of that group.
+
 ### Configuration
 
 | Variable | Default | Description |

@@ -115,10 +115,11 @@ func (t *TriggerPipeManager) stopAll() {
 	t.mu.Lock()
 	defer t.mu.Unlock()
 
-	for roomID, cancel := range t.readers {
+	for _, cancel := range t.readers {
 		cancel()
-		delete(t.readers, roomID)
 	}
+
+	clear(t.readers)
 }
 
 // readLoop is a per-room goroutine that reads lines from a named pipe
@@ -140,10 +141,10 @@ func (t *TriggerPipeManager) readLoop(ctx context.Context, roomID, pipePath stri
 	defer f.Close()
 
 	// Watch for context cancellation and close the fd to unblock the scanner.
-	go func() {
-		<-ctx.Done()
-		f.Close()
-	}()
+	// Capture stop so we can unregister the callback on normal exit,
+	// avoiding a double-close if the context outlives the loop.
+	stop := context.AfterFunc(ctx, func() { f.Close() })
+	defer stop()
 
 	scanner := bufio.NewScanner(f)
 
@@ -223,7 +224,7 @@ func ensureFIFO(path string) error {
 		if err := os.Remove(path); err != nil {
 			return fmt.Errorf("removing non-FIFO at %s: %w", path, err)
 		}
-	} else if !os.IsNotExist(err) {
+	} else if !errors.Is(err, os.ErrNotExist) {
 		return fmt.Errorf("checking FIFO at %s: %w", path, err)
 	}
 

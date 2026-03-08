@@ -10,6 +10,7 @@ import (
 	"net/http"
 	"net/http/httptest"
 	"os"
+	"slices"
 	"strings"
 	"sync"
 	"testing"
@@ -777,10 +778,7 @@ func (mc *messageCollector) get() []backend.Message {
 	mc.mu.Lock()
 	defer mc.mu.Unlock()
 
-	result := make([]backend.Message, len(mc.messages))
-	copy(result, mc.messages)
-
-	return result
+	return slices.Clone(mc.messages)
 }
 
 func (mc *messageCollector) reset() {
