@@ -158,7 +158,7 @@ func (b *Backend) SendMessage(ctx context.Context, conversationID string, text s
 		chunk := text
 		if len(chunk) > maxMessageLen {
 			cutoff := maxMessageLen
-			if idx := lastNewline(chunk[:cutoff]); idx > 0 {
+			if idx := strings.LastIndexByte(chunk[:cutoff], '\n'); idx > 0 {
 				cutoff = idx + 1
 			}
 
@@ -695,12 +695,3 @@ func (b *Backend) downloadPlain(ctx context.Context, mxcURL id.ContentURI, destP
 	return nil
 }
 
-func lastNewline(s string) int {
-	for i := len(s) - 1; i >= 0; i-- {
-		if s[i] == '\n' {
-			return i
-		}
-	}
-
-	return -1
-}
