@@ -6,15 +6,25 @@ import (
 	"testing"
 )
 
-func TestSentMessageStore_PutAndGet(t *testing.T) {
-	t.Parallel()
+// openTestStore creates a sentMessageStore backed by a temp directory
+// and registers cleanup. Returns the store and a background context.
+func openTestStore(t *testing.T) (*sentMessageStore, context.Context) {
+	t.Helper()
 
-	ctx := context.Background()
 	s, err := newSentMessageStore(context.Background(), t.TempDir())
 	if err != nil {
 		t.Fatal(err)
 	}
-	defer s.Close()
+
+	t.Cleanup(func() { s.Close() })
+
+	return s, context.Background()
+}
+
+func TestSentMessageStore_PutAndGet(t *testing.T) {
+	t.Parallel()
+
+	s, ctx := openTestStore(t)
 
 	s.Put(ctx, "room1", "msg1", "hello")
 	s.Put(ctx, "room1", "msg2", "world")
@@ -44,12 +54,7 @@ func TestSentMessageStore_PutAndGet(t *testing.T) {
 func TestSentMessageStore_EmptyIDIgnored(t *testing.T) {
 	t.Parallel()
 
-	ctx := context.Background()
-	s, err := newSentMessageStore(context.Background(), t.TempDir())
-	if err != nil {
-		t.Fatal(err)
-	}
-	defer s.Close()
+	s, ctx := openTestStore(t)
 
 	s.Put(ctx, "room1", "", "should be ignored")
 
@@ -61,12 +66,7 @@ func TestSentMessageStore_EmptyIDIgnored(t *testing.T) {
 func TestSentMessageStore_Eviction(t *testing.T) {
 	t.Parallel()
 
-	ctx := context.Background()
-	s, err := newSentMessageStore(context.Background(), t.TempDir())
-	if err != nil {
-		t.Fatal(err)
-	}
-	defer s.Close()
+	s, ctx := openTestStore(t)
 
 	// Fill beyond the limit.
 	for i := range maxSentMessagesPerConversation + 10 {
@@ -92,12 +92,7 @@ func TestSentMessageStore_Eviction(t *testing.T) {
 func TestSentMessageStore_DuplicatePutNoCorruption(t *testing.T) {
 	t.Parallel()
 
-	ctx := context.Background()
-	s, err := newSentMessageStore(context.Background(), t.TempDir())
-	if err != nil {
-		t.Fatal(err)
-	}
-	defer s.Close()
+	s, ctx := openTestStore(t)
 
 	// Insert max entries, then overwrite the first one. This must not
 	// create a duplicate in Order, which would break eviction.
