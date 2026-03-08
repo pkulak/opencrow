@@ -35,7 +35,7 @@ func TestSendFile_UploadsToBlossom(t *testing.T) {
 
 	botSK := gonostr.Generate()
 
-	b, err := NewBackend(Config{
+	b, err := NewBackend(context.Background(), Config{
 		PrivateKey:     botSK.Hex(),
 		Relays:         []string{},
 		BlossomServers: []string{srv.URL},
@@ -87,7 +87,7 @@ func TestSendFile_BlossomFallback(t *testing.T) {
 
 	botSK := gonostr.Generate()
 
-	b, err := NewBackend(Config{
+	b, err := NewBackend(context.Background(), Config{
 		PrivateKey:     botSK.Hex(),
 		Relays:         []string{},
 		BlossomServers: []string{srv1.URL, srv2.URL},
@@ -206,7 +206,7 @@ func TestSendFile_AllBlossomsFail(t *testing.T) {
 
 	botSK := gonostr.Generate()
 
-	b, err := NewBackend(Config{
+	b, err := NewBackend(context.Background(), Config{
 		PrivateKey:     botSK.Hex(),
 		Relays:         []string{},
 		BlossomServers: []string{srv.URL},

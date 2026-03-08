@@ -81,7 +81,10 @@ func TestApp_Stop_NoSession(t *testing.T) {
 
 	mb := &mockBackend{}
 	pool := NewPiPool(PiConfig{SessionDir: t.TempDir()})
-	app := NewApp(mb, pool, nil, t.TempDir())
+	app, err := NewApp(context.Background(), mb, pool, nil, t.TempDir())
+	if err != nil {
+		t.Fatal(err)
+	}
 
 	ctx := context.Background()
 	app.HandleMessage(ctx, backend.Message{
@@ -107,7 +110,10 @@ func TestApp_Compact_NoSession(t *testing.T) {
 
 	mb := &mockBackend{}
 	pool := NewPiPool(PiConfig{SessionDir: t.TempDir()})
-	app := NewApp(mb, pool, nil, t.TempDir())
+	app, err := NewApp(context.Background(), mb, pool, nil, t.TempDir())
+	if err != nil {
+		t.Fatal(err)
+	}
 
 	ctx := context.Background()
 	app.HandleMessage(ctx, backend.Message{
@@ -133,7 +139,10 @@ func TestApp_Help(t *testing.T) {
 
 	mb := &mockBackend{}
 	pool := NewPiPool(PiConfig{SessionDir: t.TempDir()})
-	app := NewApp(mb, pool, nil, t.TempDir())
+	app, err := NewApp(context.Background(), mb, pool, nil, t.TempDir())
+	if err != nil {
+		t.Fatal(err)
+	}
 
 	ctx := context.Background()
 	app.HandleMessage(ctx, backend.Message{
@@ -166,7 +175,10 @@ func TestApp_Restart(t *testing.T) {
 
 	mb := &mockBackend{}
 	pool := NewPiPool(PiConfig{SessionDir: t.TempDir()})
-	app := NewApp(mb, pool, nil, t.TempDir())
+	app, err := NewApp(context.Background(), mb, pool, nil, t.TempDir())
+	if err != nil {
+		t.Fatal(err)
+	}
 
 	ctx := context.Background()
 	app.HandleMessage(ctx, backend.Message{
@@ -196,7 +208,10 @@ func TestApp_Skills(t *testing.T) {
 
 	mb := &mockBackend{}
 	pool := NewPiPool(PiConfig{SessionDir: t.TempDir()})
-	app := NewApp(mb, pool, nil, t.TempDir())
+	app, err := NewApp(context.Background(), mb, pool, nil, t.TempDir())
+	if err != nil {
+		t.Fatal(err)
+	}
 
 	ctx := context.Background()
 	app.HandleMessage(ctx, backend.Message{
@@ -218,10 +233,15 @@ func TestApp_BuildPromptText_ReplyToUserMessage(t *testing.T) {
 
 	mb := &mockBackend{}
 	pool := NewPiPool(PiConfig{SessionDir: t.TempDir()})
-	app := NewApp(mb, pool, nil, t.TempDir())
+	app, err := NewApp(context.Background(), mb, pool, nil, t.TempDir())
+	if err != nil {
+		t.Fatal(err)
+	}
+
+	ctx := context.Background()
 
 	// Record a user message as HandleMessage would.
-	app.sent.Put("conv1", "user-msg-123", "original question")
+	app.sent.Put(ctx, "conv1", "user-msg-123", "original question")
 
 	// Now simulate the user replying to their own message.
 	replyMsg := backend.Message{
@@ -232,7 +252,7 @@ func TestApp_BuildPromptText_ReplyToUserMessage(t *testing.T) {
 		ReplyToID:      "user-msg-123",
 	}
 
-	got := app.buildPromptText(replyMsg)
+	got := app.buildPromptText(ctx, replyMsg)
 	want := `[user replied to message: "original question"]
 follow-up`
 
@@ -246,7 +266,10 @@ func TestApp_SystemPrompt(t *testing.T) {
 
 	mb := &mockBackend{systemPromptExtraText: "You are in a Nostr DM."}
 	pool := NewPiPool(PiConfig{SessionDir: t.TempDir()})
-	app := NewApp(mb, pool, nil, t.TempDir())
+	app, err := NewApp(context.Background(), mb, pool, nil, t.TempDir())
+	if err != nil {
+		t.Fatal(err)
+	}
 
 	got := app.systemPrompt("Base prompt")
 
@@ -261,7 +284,10 @@ func TestApp_SystemPrompt_NoExtra(t *testing.T) {
 
 	mb := &mockBackend{}
 	pool := NewPiPool(PiConfig{SessionDir: t.TempDir()})
-	app := NewApp(mb, pool, nil, t.TempDir())
+	app, err := NewApp(context.Background(), mb, pool, nil, t.TempDir())
+	if err != nil {
+		t.Fatal(err)
+	}
 
 	got := app.systemPrompt("Base prompt")
 	if got != "Base prompt" {
