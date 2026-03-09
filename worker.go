@@ -150,11 +150,21 @@ func (w *Worker) Compact(ctx context.Context) (*CompactResult, error) {
 		return nil, errors.New("no active session")
 	}
 
+	w.mu.Lock()
+	if w.compactResult != nil {
+		w.mu.Unlock()
+
+		return nil, errors.New("compact already in progress")
+	}
+
 	ch := make(chan compactOutcome, 1)
 	w.compactResult = ch
+	w.mu.Unlock()
 
 	if err := w.inbox.Enqueue(ctx, PriorityUser, sourceCompact, "", ""); err != nil {
+		w.mu.Lock()
 		w.compactResult = nil
+		w.mu.Unlock()
 
 		return nil, fmt.Errorf("enqueuing compact: %w", err)
 	}
@@ -366,8 +376,10 @@ func (w *Worker) handlePromptError(ctx context.Context, item Inbox, convID strin
 }
 
 func (w *Worker) processCompact(ctx context.Context) {
+	w.mu.Lock()
 	ch := w.compactResult
 	w.compactResult = nil
+	w.mu.Unlock()
 
 	if ch == nil {
 		slog.Warn("worker: compact item but no result channel")
