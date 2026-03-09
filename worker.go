@@ -37,7 +37,8 @@ type Worker struct {
 	hbPrompt      string
 	triggerPrompt string
 
-	// preemption state — protected by mu
+	// mu protects fields accessed from multiple goroutines:
+	// pi, roomID, lastUse, compactResult, currentPriority, currentCancel.
 	mu              sync.Mutex
 	currentPriority int64
 	currentCancel   context.CancelFunc
@@ -138,6 +139,9 @@ func (w *Worker) Abort() bool {
 
 // IsActive returns true if a pi process is alive.
 func (w *Worker) IsActive() bool {
+	w.mu.Lock()
+	defer w.mu.Unlock()
+
 	return w.pi != nil && w.pi.IsAlive()
 }
 
@@ -180,7 +184,11 @@ func (w *Worker) Compact(ctx context.Context) (*CompactResult, error) {
 }
 
 // SetRoomID sets the room ID for this worker.
-func (w *Worker) SetRoomID(roomID string) { w.roomID = roomID }
+func (w *Worker) SetRoomID(roomID string) {
+	w.mu.Lock()
+	w.roomID = roomID
+	w.mu.Unlock()
+}
 
 // SkillsSummary returns a formatted list of loaded skill paths.
 func (w *Worker) SkillsSummary() string {
@@ -214,7 +222,11 @@ func (w *Worker) StartIdleReaper(ctx context.Context) {
 			case <-ctx.Done():
 				return
 			case <-ticker.C:
-				if w.pi != nil && w.pi.IsAlive() && time.Since(w.lastUse) > w.piCfg.IdleTimeout {
+				w.mu.Lock()
+				idle := w.pi != nil && w.pi.IsAlive() && time.Since(w.lastUse) > w.piCfg.IdleTimeout
+				w.mu.Unlock()
+
+				if idle {
 					slog.Info("worker: reaping idle pi process")
 					w.stopPi()
 				}
@@ -308,7 +320,9 @@ func (w *Worker) processPrompt(ctx context.Context, item Inbox) {
 	}
 
 	if item.Source == sourceUser {
+		w.mu.Lock()
 		w.lastUse = time.Now()
+		w.mu.Unlock()
 
 		if reply == "" {
 			reply = w.retryEmptyResponse(ctx, pi)
@@ -387,13 +401,17 @@ func (w *Worker) processCompact(ctx context.Context) {
 		return
 	}
 
-	if !w.IsActive() {
+	w.mu.Lock()
+	pi := w.pi
+	w.mu.Unlock()
+
+	if pi == nil || !pi.IsAlive() {
 		ch <- compactOutcome{err: errors.New("no active session")}
 
 		return
 	}
 
-	result, err := w.pi.Compact(ctx)
+	result, err := pi.Compact(ctx)
 	ch <- compactOutcome{result: result, err: err}
 }
 
@@ -403,9 +421,14 @@ func wasPreempted(ctx context.Context, err error) bool {
 }
 
 func (w *Worker) ensurePi(ctx context.Context) (*PiProcess, error) {
+	w.mu.Lock()
 	if w.pi != nil && w.pi.IsAlive() {
-		return w.pi, nil
+		pi := w.pi
+		w.mu.Unlock()
+
+		return pi, nil
 	}
+	w.mu.Unlock()
 
 	roomID := w.resolveRoomID()
 
@@ -420,23 +443,34 @@ func (w *Worker) ensurePi(ctx context.Context) (*PiProcess, error) {
 		}
 	}
 
+	w.mu.Lock()
 	w.pi = pi
+	w.mu.Unlock()
 
 	return pi, nil
 }
 
 func (w *Worker) stopPi() {
-	if w.pi != nil {
+	w.mu.Lock()
+	pi := w.pi
+	w.pi = nil
+	w.mu.Unlock()
+
+	if pi != nil {
 		slog.Info("worker: stopping pi process")
-		w.pi.Kill()
-		w.pi = nil
+		pi.Kill()
 	}
 }
 
 func (w *Worker) resolveRoomID() string {
+	w.mu.Lock()
 	if w.roomID != "" {
-		return w.roomID
+		id := w.roomID
+		w.mu.Unlock()
+
+		return id
 	}
+	w.mu.Unlock()
 
 	path := filepath.Join(w.piCfg.SessionDir, ".room_id")
 
@@ -445,9 +479,13 @@ func (w *Worker) resolveRoomID() string {
 		return ""
 	}
 
-	w.roomID = strings.TrimSpace(string(data))
+	id := strings.TrimSpace(string(data))
 
-	return w.roomID
+	w.mu.Lock()
+	w.roomID = id
+	w.mu.Unlock()
+
+	return id
 }
 
 func (w *Worker) readHeartbeatContent() string {
