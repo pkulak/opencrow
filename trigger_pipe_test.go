@@ -26,6 +26,10 @@ func TestTriggerPipeReader_EnqueuesLines(t *testing.T) {
 
 	defer db.Close()
 
+	if _, err := db.ExecContext(ctx, dbSchema); err != nil {
+		t.Fatal(err)
+	}
+
 	inbox, err := NewInboxStore(ctx, db)
 	if err != nil {
 		t.Fatal(err)

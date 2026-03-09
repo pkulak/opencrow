@@ -9,23 +9,23 @@ import (
 	"context"
 )
 
-const countByConversation = `-- name: CountByConversation :one
-SELECT count(*) FROM sent_messages WHERE conversation_id = ?
-`
-
-func (q *Queries) CountByConversation(ctx context.Context, conversationID string) (int64, error) {
-	row := q.db.QueryRowContext(ctx, countByConversation, conversationID)
-	var count int64
-	err := row.Scan(&count)
-	return count, err
-}
-
 const countInbox = `-- name: CountInbox :one
 SELECT count(*) FROM inbox
 `
 
 func (q *Queries) CountInbox(ctx context.Context) (int64, error) {
 	row := q.db.QueryRowContext(ctx, countInbox)
+	var count int64
+	err := row.Scan(&count)
+	return count, err
+}
+
+const countOutbox = `-- name: CountOutbox :one
+SELECT count(*) FROM sent_messages WHERE conversation_id = ?
+`
+
+func (q *Queries) CountOutbox(ctx context.Context, conversationID string) (int64, error) {
+	row := q.db.QueryRowContext(ctx, countOutbox, conversationID)
 	var count int64
 	err := row.Scan(&count)
 	return count, err
@@ -49,7 +49,7 @@ func (q *Queries) DeleteInboxItem(ctx context.Context, id int64) error {
 	return err
 }
 
-const deleteOldestMessages = `-- name: DeleteOldestMessages :exec
+const deleteOldestOutbox = `-- name: DeleteOldestOutbox :exec
 DELETE FROM sent_messages
 WHERE rowid IN (
     SELECT sm.rowid FROM sent_messages sm
@@ -59,13 +59,13 @@ WHERE rowid IN (
 )
 `
 
-type DeleteOldestMessagesParams struct {
+type DeleteOldestOutboxParams struct {
 	ConversationID string
 	Limit          int64
 }
 
-func (q *Queries) DeleteOldestMessages(ctx context.Context, arg DeleteOldestMessagesParams) error {
-	_, err := q.db.ExecContext(ctx, deleteOldestMessages, arg.ConversationID, arg.Limit)
+func (q *Queries) DeleteOldestOutbox(ctx context.Context, arg DeleteOldestOutboxParams) error {
+	_, err := q.db.ExecContext(ctx, deleteOldestOutbox, arg.ConversationID, arg.Limit)
 	return err
 }
 
@@ -115,18 +115,18 @@ func (q *Queries) EnqueueInbox(ctx context.Context, arg EnqueueInboxParams) erro
 	return err
 }
 
-const getSentMessage = `-- name: GetSentMessage :one
+const getOutbox = `-- name: GetOutbox :one
 SELECT text FROM sent_messages
 WHERE conversation_id = ? AND message_id = ?
 `
 
-type GetSentMessageParams struct {
+type GetOutboxParams struct {
 	ConversationID string
 	MessageID      string
 }
 
-func (q *Queries) GetSentMessage(ctx context.Context, arg GetSentMessageParams) (string, error) {
-	row := q.db.QueryRowContext(ctx, getSentMessage, arg.ConversationID, arg.MessageID)
+func (q *Queries) GetOutbox(ctx context.Context, arg GetOutboxParams) (string, error) {
+	row := q.db.QueryRowContext(ctx, getOutbox, arg.ConversationID, arg.MessageID)
 	var text string
 	err := row.Scan(&text)
 	return text, err
@@ -153,19 +153,19 @@ func (q *Queries) PeekInbox(ctx context.Context) (Inbox, error) {
 	return i, err
 }
 
-const upsertSentMessage = `-- name: UpsertSentMessage :exec
+const upsertOutbox = `-- name: UpsertOutbox :exec
 INSERT INTO sent_messages (conversation_id, message_id, text)
 VALUES (?, ?, ?)
 ON CONFLICT(conversation_id, message_id) DO UPDATE SET text = excluded.text
 `
 
-type UpsertSentMessageParams struct {
+type UpsertOutboxParams struct {
 	ConversationID string
 	MessageID      string
 	Text           string
 }
 
-func (q *Queries) UpsertSentMessage(ctx context.Context, arg UpsertSentMessageParams) error {
-	_, err := q.db.ExecContext(ctx, upsertSentMessage, arg.ConversationID, arg.MessageID, arg.Text)
+func (q *Queries) UpsertOutbox(ctx context.Context, arg UpsertOutboxParams) error {
+	_, err := q.db.ExecContext(ctx, upsertOutbox, arg.ConversationID, arg.MessageID, arg.Text)
 	return err
 }

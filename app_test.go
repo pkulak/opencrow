@@ -87,7 +87,8 @@ func newTestAppWithBackend(t *testing.T, mb *mockBackend) (*App, *mockBackend) {
 	t.Helper()
 
 	ctx := context.Background()
-	inbox := newTestInbox(ctx, t)
+	db := newTestDB(ctx, t)
+	inbox := newTestInboxWithDB(ctx, t, db)
 
 	worker := NewWorker(WorkerConfig{
 		Inbox:     inbox,
@@ -97,14 +98,7 @@ func newTestAppWithBackend(t *testing.T, mb *mockBackend) (*App, *mockBackend) {
 		SetTyping: func(_ context.Context, _ string, _ bool) {},
 	})
 
-	app, err := NewApp(ctx, mb, worker, inbox, t.TempDir())
-	if err != nil {
-		t.Fatal(err)
-	}
-
-	t.Cleanup(func() { app.Close() })
-
-	return app, mb
+	return NewApp(mb, worker, inbox, db), mb
 }
 
 // sendCommand sends a command message from a default user to testRoom.
@@ -262,7 +256,7 @@ func TestApp_BuildPromptText_ReplyToUserMessage(t *testing.T) {
 	ctx := context.Background()
 
 	// Record a user message as HandleMessage would.
-	app.sent.Put(ctx, "conv1", "user-msg-123", "original question")
+	app.outbox.Put(ctx, "conv1", "user-msg-123", "original question")
 
 	// Now simulate the user replying to their own message.
 	replyMsg := backend.Message{

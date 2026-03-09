@@ -3,6 +3,7 @@ package main
 import (
 	"context"
 	"database/sql"
+	_ "embed"
 	"fmt"
 	"log/slog"
 	"os"
@@ -18,7 +19,13 @@ import (
 	_ "modernc.org/sqlite"
 )
 
-const opencrowDBFile = "opencrow.db"
+const (
+	opencrowDBFile     = "opencrow.db"
+	legacyOutboxDBFile = "sent_messages.db"
+)
+
+//go:embed sqlc/schema.sql
+var dbSchema string
 
 func main() {
 	slog.SetDefault(slog.New(slog.NewTextHandler(os.Stderr, &slog.HandlerOptions{
@@ -47,22 +54,27 @@ func run() int {
 	ctx, cancel := context.WithCancel(context.Background())
 	defer cancel()
 
-	db, inbox, err := openInbox(ctx, cfg.Pi.SessionDir)
+	db, err := openDB(ctx, cfg.Pi.SessionDir)
 	if err != nil {
-		slog.Error("failed to initialize inbox", "error", err)
+		slog.Error("failed to open database", "error", err)
 
 		return 1
 	}
 	defer db.Close()
 
-	b, app, worker, err := wireServices(ctx, cfg, inbox)
+	inbox, err := NewInboxStore(ctx, db)
+	if err != nil {
+		slog.Error("failed to initialize inbox", "error", err)
+
+		return 1
+	}
+
+	b, worker, err := wireServices(ctx, cfg, db, inbox)
 	if err != nil {
 		slog.Error("failed to initialize services", "error", err)
 
 		return 1
 	}
-
-	defer app.Close()
 
 	setupShutdown(b, cancel)
 
@@ -85,43 +97,85 @@ func run() int {
 	return 0
 }
 
-func openInbox(ctx context.Context, sessionDir string) (*sql.DB, *InboxStore, error) {
+// openDB opens the shared database for inbox and outbox tables.
+// On first run it creates the schema. If a legacy sent_messages.db exists
+// from before the unification, its rows are migrated and the file removed.
+func openDB(ctx context.Context, sessionDir string) (*sql.DB, error) {
 	dbPath := filepath.Join(sessionDir, opencrowDBFile)
 
 	db, err := sql.Open("sqlite", dbPath+"?_journal_mode=WAL&_busy_timeout=5000")
 	if err != nil {
-		return nil, nil, fmt.Errorf("opening database: %w", err)
+		return nil, fmt.Errorf("opening database: %w", err)
 	}
 
-	inbox, err := NewInboxStore(ctx, db)
-	if err != nil {
+	if _, err := db.ExecContext(ctx, dbSchema); err != nil {
 		db.Close()
 
-		return nil, nil, fmt.Errorf("creating inbox store: %w", err)
+		return nil, fmt.Errorf("migrating schema: %w", err)
 	}
 
-	return db, inbox, nil
+	if err := migrateLegacyOutbox(ctx, db, sessionDir); err != nil {
+		// Non-fatal: log and continue with an empty outbox rather than
+		// refusing to start.
+		slog.Warn("failed to migrate legacy sent_messages.db", "error", err)
+	}
+
+	return db, nil
+}
+
+// migrateLegacyOutbox copies rows from the old sent_messages.db into the
+// unified opencrow.db, then removes the legacy file. This is a one-time
+// migration for existing installations.
+func migrateLegacyOutbox(ctx context.Context, db *sql.DB, sessionDir string) error {
+	legacyPath := filepath.Join(sessionDir, legacyOutboxDBFile)
+
+	if _, err := os.Stat(legacyPath); err != nil {
+		return nil // no legacy file, nothing to do
+	}
+
+	slog.Info("migrating legacy sent_messages.db into opencrow.db")
+
+	// Attach the old DB, copy rows, detach.
+	if _, err := db.ExecContext(ctx, "ATTACH DATABASE ? AS legacy", legacyPath); err != nil {
+		return fmt.Errorf("attaching legacy db: %w", err)
+	}
+
+	defer db.ExecContext(ctx, "DETACH DATABASE legacy") //nolint:errcheck // best-effort detach
+
+	if _, err := db.ExecContext(ctx, `
+		INSERT OR IGNORE INTO sent_messages (conversation_id, message_id, text)
+		SELECT conversation_id, message_id, text FROM legacy.sent_messages
+	`); err != nil {
+		return fmt.Errorf("copying legacy rows: %w", err)
+	}
+
+	if err := os.Remove(legacyPath); err != nil {
+		return fmt.Errorf("removing legacy db: %w", err)
+	}
+
+	// Also clean up WAL/SHM files left by the old DB.
+	_ = os.Remove(legacyPath + "-wal")
+	_ = os.Remove(legacyPath + "-shm")
+
+	slog.Info("legacy sent_messages.db migrated and removed")
+
+	return nil
 }
 
 // wireServices creates the backend, app, worker, and starts background schedulers.
 // It uses a two-phase init: first create everything, then wire cross-references.
-func wireServices(ctx context.Context, cfg *Config, inbox *InboxStore) (backend.Backend, *App, *Worker, error) { //nolint:ireturn // factory returns interface by design
-	// Phase 1: create objects with nil cross-references.
+func wireServices(ctx context.Context, cfg *Config, db *sql.DB, inbox *InboxStore) (backend.Backend, *Worker, error) { //nolint:ireturn // factory returns interface by design
 	var (
 		app    *App
 		worker *Worker
 	)
 
 	b, err := createBackend(ctx, cfg,
-		// message handler — app is set in phase 2
-		func(ctx context.Context, msg backend.Message) {
-			app.HandleMessage(ctx, msg)
-		},
-		// room cleanup — worker is set in phase 2
+		func(ctx context.Context, msg backend.Message) { app.HandleMessage(ctx, msg) },
 		func(_ string) { worker.Restart() },
 	)
 	if err != nil {
-		return nil, nil, nil, err
+		return nil, nil, err
 	}
 
 	worker = NewWorker(WorkerConfig{
@@ -138,12 +192,7 @@ func wireServices(ctx context.Context, cfg *Config, inbox *InboxStore) (backend.
 		OnToolCall: toolCallFn(cfg.Pi.ShowToolCalls, b, func() string { return worker.resolveRoomID() }), //nolint:contextcheck // callback has no context param by design
 	})
 
-	// Phase 2: wire cross-references.
-	app, err = NewApp(ctx, b, worker, inbox, cfg.Pi.SessionDir)
-	if err != nil {
-		return nil, nil, nil, err
-	}
-
+	app = NewApp(b, worker, inbox, db)
 	cfg.Pi.SystemPrompt = app.systemPrompt(cfg.Pi.SystemPrompt)
 
 	// Start background services.
@@ -152,7 +201,7 @@ func wireServices(ctx context.Context, cfg *Config, inbox *InboxStore) (backend.
 
 	worker.StartIdleReaper(ctx)
 
-	return b, app, worker, nil
+	return b, worker, nil
 }
 
 func toolCallFn(enabled bool, b backend.Backend, resolveRoom func() string) func(ToolCallEvent) {

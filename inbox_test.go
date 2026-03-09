@@ -9,8 +9,8 @@ import (
 	_ "modernc.org/sqlite"
 )
 
-// newTestInbox creates an InboxStore backed by an in-memory SQLite DB.
-func newTestInbox(ctx context.Context, t *testing.T) *InboxStore {
+// newTestDB creates an in-memory SQLite DB with the full schema applied.
+func newTestDB(ctx context.Context, t *testing.T) *sql.DB {
 	t.Helper()
 
 	db, err := sql.Open("sqlite", ":memory:?_journal_mode=WAL&_busy_timeout=5000")
@@ -18,7 +18,19 @@ func newTestInbox(ctx context.Context, t *testing.T) *InboxStore {
 		t.Fatal(err)
 	}
 
+	if _, err := db.ExecContext(ctx, dbSchema); err != nil {
+		db.Close()
+		t.Fatal(err)
+	}
+
 	t.Cleanup(func() { db.Close() })
+
+	return db
+}
+
+// newTestInboxWithDB creates an InboxStore using an existing DB connection.
+func newTestInboxWithDB(ctx context.Context, t *testing.T, db *sql.DB) *InboxStore {
+	t.Helper()
 
 	inbox, err := NewInboxStore(ctx, db)
 	if err != nil {
@@ -26,6 +38,13 @@ func newTestInbox(ctx context.Context, t *testing.T) *InboxStore {
 	}
 
 	return inbox
+}
+
+// newTestInbox creates an InboxStore backed by an in-memory SQLite DB.
+func newTestInbox(ctx context.Context, t *testing.T) *InboxStore {
+	t.Helper()
+
+	return newTestInboxWithDB(ctx, t, newTestDB(ctx, t))
 }
 
 func TestInbox_PriorityOrder(t *testing.T) {
@@ -112,8 +131,8 @@ func TestInbox_ClearsStaleHeartbeatsOnInit(t *testing.T) {
 
 	defer db.Close()
 
-	// Create table and insert a stale heartbeat.
-	if _, err := db.ExecContext(ctx, inboxSchema); err != nil {
+	// Create tables and insert a stale heartbeat.
+	if _, err := db.ExecContext(ctx, dbSchema); err != nil {
 		t.Fatal(err)
 	}
 
@@ -155,6 +174,11 @@ func TestInbox_Persistence(t *testing.T) {
 		t.Fatal(err)
 	}
 
+	if _, err := db1.ExecContext(ctx, dbSchema); err != nil {
+		db1.Close()
+		t.Fatal(err)
+	}
+
 	inbox1, err := NewInboxStore(ctx, db1)
 	if err != nil {
 		t.Fatal(err)
@@ -170,6 +194,10 @@ func TestInbox_Persistence(t *testing.T) {
 	}
 
 	defer db2.Close()
+
+	if _, err := db2.ExecContext(ctx, dbSchema); err != nil {
+		t.Fatal(err)
+	}
 
 	inbox2, err := NewInboxStore(ctx, db2)
 	if err != nil {

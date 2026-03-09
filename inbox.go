@@ -33,13 +33,10 @@ type InboxStore struct {
 	currentCancel   context.CancelFunc
 }
 
-// NewInboxStore opens (or creates) the inbox database in the given directory.
-// It reuses the same DB file as the sent message store since they share a schema.
+// NewInboxStore wraps an existing database connection. The schema must
+// already be applied (openDB handles this). Clears stale heartbeat
+// markers left over from a previous crash.
 func NewInboxStore(ctx context.Context, db *sql.DB) (*InboxStore, error) {
-	if _, err := db.ExecContext(ctx, inboxSchema); err != nil {
-		return nil, fmt.Errorf("migrating inbox table: %w", err)
-	}
-
 	queries := New(db)
 
 	// Clear stale heartbeat markers from a previous run — the timer
@@ -57,15 +54,6 @@ func NewInboxStore(ctx context.Context, db *sql.DB) (*InboxStore, error) {
 }
 
 //go:generate sqlc generate
-
-const inboxSchema = `CREATE TABLE IF NOT EXISTS inbox (
-    id         INTEGER PRIMARY KEY AUTOINCREMENT,
-    priority   INTEGER NOT NULL DEFAULT 2,
-    source     TEXT    NOT NULL,
-    content    TEXT    NOT NULL DEFAULT '',
-    reply_to   TEXT    NOT NULL DEFAULT '',
-    created_at TEXT    NOT NULL DEFAULT (strftime('%Y-%m-%dT%H:%M:%fZ', 'now'))
-);`
 
 // Enqueue inserts an item into the inbox and signals the worker.
 // If the worker is currently processing a lower-priority item, its

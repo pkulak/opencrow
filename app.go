@@ -2,6 +2,7 @@ package main
 
 import (
 	"context"
+	"database/sql"
 	"fmt"
 	"log/slog"
 	"path/filepath"
@@ -42,34 +43,25 @@ type App struct {
 	backend backend.Backend
 	worker  *Worker
 	inbox   *InboxStore
-	sent    *sentMessageStore
+	outbox  *outboxStore
 }
 
-// NewApp creates a new App.
-func NewApp(ctx context.Context, b backend.Backend, worker *Worker, inbox *InboxStore, dataDir string) (*App, error) {
-	sent, err := newSentMessageStore(ctx, dataDir)
-	if err != nil {
-		return nil, fmt.Errorf("initializing sent message store: %w", err)
-	}
-
+// NewApp creates a new App. The db connection is shared with the inbox
+// and owned by the caller.
+func NewApp(b backend.Backend, worker *Worker, inbox *InboxStore, db *sql.DB) *App {
 	return &App{
 		backend: b,
 		worker:  worker,
 		inbox:   inbox,
-		sent:    sent,
-	}, nil
-}
-
-// Close releases resources held by the App.
-func (a *App) Close() error {
-	return a.sent.Close()
+		outbox:  newOutboxStore(db),
+	}
 }
 
 // HandleMessage is the backend.MessageHandler callback. It dispatches
 // commands and enqueues normal messages into the inbox.
 func (a *App) HandleMessage(ctx context.Context, msg backend.Message) {
 	// Record the incoming message so future reply-to references can quote it.
-	a.sent.Put(ctx, msg.ConversationID, msg.MessageID, msg.Text)
+	a.outbox.Put(ctx, msg.ConversationID, msg.MessageID, msg.Text)
 
 	switch msg.Text {
 	case "!help":
@@ -157,7 +149,7 @@ func (a *App) buildPromptText(ctx context.Context, msg backend.Message) string {
 	promptText := msg.Text
 
 	if msg.ReplyToID != "" {
-		if quoted := a.sent.Get(ctx, msg.ConversationID, msg.ReplyToID); quoted != "" {
+		if quoted := a.outbox.Get(ctx, msg.ConversationID, msg.ReplyToID); quoted != "" {
 			promptText = fmt.Sprintf("[user replied to message: %q]\n%s", quoted, promptText)
 		} else {
 			promptText = "[user replied to a message whose content is unavailable — ask for clarification if their message is unclear]\n" + promptText
@@ -190,7 +182,7 @@ func (a *App) sendReplyWithFiles(ctx context.Context, conversationID, reply, rep
 
 	if cleanReply != "" {
 		sentID := a.backend.SendMessage(ctx, conversationID, cleanReply, replyToID)
-		a.sent.Put(ctx, conversationID, sentID, cleanReply)
+		a.outbox.Put(ctx, conversationID, sentID, cleanReply)
 	}
 }
 
