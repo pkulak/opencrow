@@ -77,7 +77,6 @@ func (m *mockBackend) SystemPromptExtra() string {
 }
 
 // newTestApp creates a mockBackend + App wired together for testing.
-// The mockBackend is returned so tests can inspect recorded calls.
 func newTestApp(t *testing.T) (*App, *mockBackend) {
 	t.Helper()
 
@@ -87,8 +86,18 @@ func newTestApp(t *testing.T) (*App, *mockBackend) {
 func newTestAppWithBackend(t *testing.T, mb *mockBackend) (*App, *mockBackend) {
 	t.Helper()
 
-	pool := NewPiPool(PiConfig{SessionDir: t.TempDir()})
-	app, err := NewApp(context.Background(), mb, pool, nil, t.TempDir())
+	ctx := context.Background()
+	inbox := newTestInbox(ctx, t)
+
+	worker := NewWorker(WorkerConfig{
+		Inbox:     inbox,
+		PiCfg:     PiConfig{SessionDir: t.TempDir()},
+		HbCfg:     HeartbeatConfig{},
+		SendReply: func(_ context.Context, _ string, _ string, _ string) {},
+		SetTyping: func(_ context.Context, _ string, _ bool) {},
+	})
+
+	app, err := NewApp(ctx, mb, worker, inbox, t.TempDir())
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -201,6 +210,47 @@ func TestApp_Skills(t *testing.T) {
 
 	if len(mb.sentMessages) != 1 {
 		t.Fatalf("sent %d messages, want 1", len(mb.sentMessages))
+	}
+}
+
+func TestApp_PromptEnqueuesInbox(t *testing.T) {
+	t.Parallel()
+
+	app, _ := newTestApp(t)
+
+	app.HandleMessage(context.Background(), backend.Message{
+		ConversationID: testRoom,
+		SenderID:       "@user:example.com",
+		Text:           "hello world",
+		MessageID:      "msg-1",
+	})
+
+	ctx := context.Background()
+
+	count, err := app.inbox.Count(ctx)
+	if err != nil {
+		t.Fatal(err)
+	}
+
+	if count != 1 {
+		t.Fatalf("inbox count = %d, want 1", count)
+	}
+
+	item, err := app.inbox.Dequeue(ctx)
+	if err != nil {
+		t.Fatal(err)
+	}
+
+	if item.Source != "user" {
+		t.Errorf("Source = %q, want %q", item.Source, "user")
+	}
+
+	if item.Priority != PriorityUser {
+		t.Errorf("Priority = %d, want %d", item.Priority, PriorityUser)
+	}
+
+	if item.Content != "hello world" {
+		t.Errorf("Content = %q, want %q", item.Content, "hello world")
 	}
 }
 

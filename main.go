@@ -2,28 +2,23 @@ package main
 
 import (
 	"context"
+	"database/sql"
 	"fmt"
 	"log/slog"
 	"os"
 	"os/signal"
+	"path/filepath"
 	"strings"
 	"syscall"
 
 	"github.com/pinpox/opencrow/backend"
 	"github.com/pinpox/opencrow/matrix"
 	nostrbackend "github.com/pinpox/opencrow/nostr"
+	// Register the pure-Go SQLite driver.
+	_ "modernc.org/sqlite"
 )
 
-// ensureSessionDir creates the session directory (and parents) if it doesn't
-// exist. Both backends and the app store SQLite databases here, so the
-// directory must exist before any of them are initialized.
-func ensureSessionDir(path string) error {
-	if err := os.MkdirAll(path, 0o750); err != nil {
-		return fmt.Errorf("creating session directory %s: %w", path, err)
-	}
-
-	return nil
-}
+const opencrowDBFile = "opencrow.db"
 
 func main() {
 	slog.SetDefault(slog.New(slog.NewTextHandler(os.Stderr, &slog.HandlerOptions{
@@ -43,68 +38,137 @@ func run() int {
 
 	slog.Info("config loaded", "backend", cfg.BackendType)
 
-	if err := ensureSessionDir(cfg.Pi.SessionDir); err != nil {
+	if err := os.MkdirAll(cfg.Pi.SessionDir, 0o750); err != nil {
 		slog.Error("failed to create session directory", "error", err)
 
 		return 1
 	}
 
-	pool := NewPiPool(cfg.Pi)
-
 	ctx, cancel := context.WithCancel(context.Background())
 	defer cancel()
 
-	pool.StartIdleReaper(ctx)
+	db, inbox, err := openInbox(ctx, cfg.Pi.SessionDir)
+	if err != nil {
+		slog.Error("failed to initialize inbox", "error", err)
 
-	b, app, err := wireServices(ctx, cfg, pool)
+		return 1
+	}
+	defer db.Close()
+
+	b, app, worker, err := wireServices(ctx, cfg, inbox)
 	if err != nil {
 		slog.Error("failed to initialize services", "error", err)
 
 		return 1
 	}
 
-	setupShutdown(b, pool, cancel)
+	defer app.Close()
+
+	setupShutdown(b, cancel)
+
+	go worker.Run(ctx)
 
 	slog.Info("opencrow starting")
 
-	return runBackend(ctx, b, app)
-}
+	if err := b.Run(ctx); err != nil {
+		if ctx.Err() == nil {
+			slog.Error("backend exited with error", "error", err)
 
-// wireServices creates the backend, app, heartbeat scheduler, and trigger pipe manager.
-func wireServices(ctx context.Context, cfg *Config, pool *PiPool) (backend.Backend, *App, error) { //nolint:ireturn // factory returns interface by design
-	var app *App
-
-	handler := func(ctx context.Context, msg backend.Message) {
-		if app == nil {
-			slog.Error("received message before app was initialized")
-
-			return
+			return 1
 		}
 
-		app.HandleMessage(ctx, msg)
+		slog.Info("shutdown complete")
 	}
 
-	b, err := createBackend(ctx, cfg, pool, handler)
+	_ = b.Close()
+
+	return 0
+}
+
+func openInbox(ctx context.Context, sessionDir string) (*sql.DB, *InboxStore, error) {
+	dbPath := filepath.Join(sessionDir, opencrowDBFile)
+
+	db, err := sql.Open("sqlite", dbPath+"?_journal_mode=WAL&_busy_timeout=5000")
 	if err != nil {
-		return nil, nil, err
+		return nil, nil, fmt.Errorf("opening database: %w", err)
 	}
 
-	app, err = NewApp(ctx, b, pool, nil, cfg.Pi.SessionDir)
+	inbox, err := NewInboxStore(ctx, db)
 	if err != nil {
-		return nil, nil, err
+		db.Close()
+
+		return nil, nil, fmt.Errorf("creating inbox store: %w", err)
+	}
+
+	return db, inbox, nil
+}
+
+// wireServices creates the backend, app, worker, and starts background schedulers.
+// It uses a two-phase init: first create everything, then wire cross-references.
+func wireServices(ctx context.Context, cfg *Config, inbox *InboxStore) (backend.Backend, *App, *Worker, error) { //nolint:ireturn // factory returns interface by design
+	// Phase 1: create objects with nil cross-references.
+	var (
+		app    *App
+		worker *Worker
+	)
+
+	b, err := createBackend(ctx, cfg,
+		// message handler — app is set in phase 2
+		func(ctx context.Context, msg backend.Message) {
+			app.HandleMessage(ctx, msg)
+		},
+		// room cleanup — worker is set in phase 2
+		func(_ string) { worker.Restart() },
+	)
+	if err != nil {
+		return nil, nil, nil, err
+	}
+
+	worker = NewWorker(WorkerConfig{
+		Inbox:         inbox,
+		PiCfg:         cfg.Pi,
+		HbCfg:         cfg.Heartbeat,
+		TriggerPrompt: defaultTriggerPrompt,
+		SendReply: func(ctx context.Context, conversationID, text, replyToID string) {
+			app.sendReplyWithFiles(ctx, conversationID, text, replyToID)
+		},
+		SetTyping: func(ctx context.Context, conversationID string, typing bool) {
+			b.SetTyping(ctx, conversationID, typing)
+		},
+		OnToolCall: toolCallFn(cfg.Pi.ShowToolCalls, b, func() string { return worker.resolveRoomID() }), //nolint:contextcheck // callback has no context param by design
+	})
+
+	// Phase 2: wire cross-references.
+	app, err = NewApp(ctx, b, worker, inbox, cfg.Pi.SessionDir)
+	if err != nil {
+		return nil, nil, nil, err
 	}
 
 	cfg.Pi.SystemPrompt = app.systemPrompt(cfg.Pi.SystemPrompt)
 
-	startSchedulers(ctx, cfg, pool, b, app)
+	// Start background services.
+	NewHeartbeatScheduler(inbox, cfg.Heartbeat).Start(ctx)
+	NewTriggerPipeReader(inbox, cfg.Pi.SessionDir).Start(ctx)
 
-	return b, app, nil
+	worker.StartIdleReaper(ctx)
+
+	return b, app, worker, nil
 }
 
-func createBackend(ctx context.Context, cfg *Config, pool *PiPool, handler backend.MessageHandler) (backend.Backend, error) { //nolint:ireturn // factory returns interface by design
+func toolCallFn(enabled bool, b backend.Backend, resolveRoom func() string) func(ToolCallEvent) {
+	if !enabled {
+		return nil
+	}
+
+	return func(evt ToolCallEvent) {
+		b.SendMessage(context.Background(), resolveRoom(), formatToolCall(evt), "")
+	}
+}
+
+func createBackend(ctx context.Context, cfg *Config, handler backend.MessageHandler, onRoomCleanup func(string)) (backend.Backend, error) { //nolint:ireturn // factory returns interface by design
 	switch cfg.BackendType {
 	case backendMatrix:
-		return createMatrixBackend(cfg, pool, handler)
+		return createMatrixBackend(cfg, handler, onRoomCleanup)
 	case backendNostr:
 		return createNostrBackend(ctx, cfg, handler)
 	default:
@@ -112,25 +176,7 @@ func createBackend(ctx context.Context, cfg *Config, pool *PiPool, handler backe
 	}
 }
 
-func startSchedulers(ctx context.Context, cfg *Config, pool *PiPool, b backend.Backend, app *App) {
-	hb := NewHeartbeatScheduler(pool, cfg.Pi, cfg.Heartbeat, func(ctx context.Context, roomID string, text string) {
-		app.sendReplyWithFiles(ctx, roomID, text, "")
-	})
-	hb.Start(ctx)
-
-	triggerMgr := NewTriggerPipeManager(pool, cfg.Pi, defaultTriggerPrompt,
-		func(ctx context.Context, roomID string, text string) {
-			app.sendReplyWithFiles(ctx, roomID, text, "")
-		},
-		func(ctx context.Context, roomID string, typing bool) {
-			b.SetTyping(ctx, roomID, typing)
-		},
-	)
-	triggerMgr.Start(ctx)
-	app.triggerMgr = triggerMgr
-}
-
-func setupShutdown(b backend.Backend, pool *PiPool, cancel context.CancelFunc) {
+func setupShutdown(b backend.Backend, cancel context.CancelFunc) {
 	sigCh := make(chan os.Signal, 1)
 	signal.Notify(sigCh, syscall.SIGINT, syscall.SIGTERM)
 
@@ -138,32 +184,11 @@ func setupShutdown(b backend.Backend, pool *PiPool, cancel context.CancelFunc) {
 		sig := <-sigCh
 		slog.Info("received signal, shutting down", "signal", sig)
 		b.Stop()
-		pool.StopAll()
 		cancel()
 	}()
 }
 
-func runBackend(ctx context.Context, b backend.Backend, app *App) int {
-	defer app.Close()
-
-	if err := b.Run(ctx); err != nil {
-		if ctx.Err() != nil {
-			slog.Info("shutdown complete")
-		} else {
-			slog.Error("backend exited with error", "error", err)
-
-			return 1
-		}
-	}
-
-	if err := b.Close(); err != nil {
-		slog.Error("failed to close backend", "error", err)
-	}
-
-	return 0
-}
-
-func createMatrixBackend(cfg *Config, pool *PiPool, handler backend.MessageHandler) (*matrix.Backend, error) {
+func createMatrixBackend(cfg *Config, handler backend.MessageHandler, onRoomCleanup func(string)) (*matrix.Backend, error) {
 	matrixCfg := matrix.Config{
 		Homeserver:     cfg.Matrix.Homeserver,
 		UserID:         cfg.Matrix.UserID,
@@ -180,9 +205,7 @@ func createMatrixBackend(cfg *Config, pool *PiPool, handler backend.MessageHandl
 		return nil, fmt.Errorf("creating matrix backend: %w", err)
 	}
 
-	b.SetRoomCleanupCallback(func(roomID string) {
-		pool.Remove(roomID)
-	})
+	b.SetRoomCleanupCallback(onRoomCleanup)
 
 	return b, nil
 }

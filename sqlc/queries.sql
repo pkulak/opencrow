@@ -18,3 +18,31 @@ WHERE rowid IN (
     ORDER BY sm.rowid ASC
     LIMIT ?
 );
+
+-- name: EnqueueInbox :exec
+INSERT INTO inbox (priority, source, content, reply_to)
+VALUES (?, ?, ?, ?);
+
+-- name: DequeueInbox :one
+DELETE FROM inbox
+WHERE id = (
+    SELECT id FROM inbox
+    ORDER BY priority ASC, id ASC
+    LIMIT 1
+)
+RETURNING id, priority, source, content, reply_to, created_at;
+
+-- name: PeekInbox :one
+SELECT id, priority, source, content, reply_to, created_at
+FROM inbox
+ORDER BY priority ASC, id ASC
+LIMIT 1;
+
+-- name: DeleteInboxItem :exec
+DELETE FROM inbox WHERE id = ?;
+
+-- name: DeleteHeartbeatItems :exec
+DELETE FROM inbox WHERE source = 'heartbeat';
+
+-- name: CountInbox :one
+SELECT count(*) FROM inbox;

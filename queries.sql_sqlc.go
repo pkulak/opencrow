@@ -20,6 +20,35 @@ func (q *Queries) CountByConversation(ctx context.Context, conversationID string
 	return count, err
 }
 
+const countInbox = `-- name: CountInbox :one
+SELECT count(*) FROM inbox
+`
+
+func (q *Queries) CountInbox(ctx context.Context) (int64, error) {
+	row := q.db.QueryRowContext(ctx, countInbox)
+	var count int64
+	err := row.Scan(&count)
+	return count, err
+}
+
+const deleteHeartbeatItems = `-- name: DeleteHeartbeatItems :exec
+DELETE FROM inbox WHERE source = 'heartbeat'
+`
+
+func (q *Queries) DeleteHeartbeatItems(ctx context.Context) error {
+	_, err := q.db.ExecContext(ctx, deleteHeartbeatItems)
+	return err
+}
+
+const deleteInboxItem = `-- name: DeleteInboxItem :exec
+DELETE FROM inbox WHERE id = ?
+`
+
+func (q *Queries) DeleteInboxItem(ctx context.Context, id int64) error {
+	_, err := q.db.ExecContext(ctx, deleteInboxItem, id)
+	return err
+}
+
 const deleteOldestMessages = `-- name: DeleteOldestMessages :exec
 DELETE FROM sent_messages
 WHERE rowid IN (
@@ -40,6 +69,52 @@ func (q *Queries) DeleteOldestMessages(ctx context.Context, arg DeleteOldestMess
 	return err
 }
 
+const dequeueInbox = `-- name: DequeueInbox :one
+DELETE FROM inbox
+WHERE id = (
+    SELECT id FROM inbox
+    ORDER BY priority ASC, id ASC
+    LIMIT 1
+)
+RETURNING id, priority, source, content, reply_to, created_at
+`
+
+func (q *Queries) DequeueInbox(ctx context.Context) (Inbox, error) {
+	row := q.db.QueryRowContext(ctx, dequeueInbox)
+	var i Inbox
+	err := row.Scan(
+		&i.ID,
+		&i.Priority,
+		&i.Source,
+		&i.Content,
+		&i.ReplyTo,
+		&i.CreatedAt,
+	)
+	return i, err
+}
+
+const enqueueInbox = `-- name: EnqueueInbox :exec
+INSERT INTO inbox (priority, source, content, reply_to)
+VALUES (?, ?, ?, ?)
+`
+
+type EnqueueInboxParams struct {
+	Priority int64
+	Source   string
+	Content  string
+	ReplyTo  string
+}
+
+func (q *Queries) EnqueueInbox(ctx context.Context, arg EnqueueInboxParams) error {
+	_, err := q.db.ExecContext(ctx, enqueueInbox,
+		arg.Priority,
+		arg.Source,
+		arg.Content,
+		arg.ReplyTo,
+	)
+	return err
+}
+
 const getSentMessage = `-- name: GetSentMessage :one
 SELECT text FROM sent_messages
 WHERE conversation_id = ? AND message_id = ?
@@ -55,6 +130,27 @@ func (q *Queries) GetSentMessage(ctx context.Context, arg GetSentMessageParams) 
 	var text string
 	err := row.Scan(&text)
 	return text, err
+}
+
+const peekInbox = `-- name: PeekInbox :one
+SELECT id, priority, source, content, reply_to, created_at
+FROM inbox
+ORDER BY priority ASC, id ASC
+LIMIT 1
+`
+
+func (q *Queries) PeekInbox(ctx context.Context) (Inbox, error) {
+	row := q.db.QueryRowContext(ctx, peekInbox)
+	var i Inbox
+	err := row.Scan(
+		&i.ID,
+		&i.Priority,
+		&i.Source,
+		&i.Content,
+		&i.ReplyTo,
+		&i.CreatedAt,
+	)
+	return i, err
 }
 
 const upsertSentMessage = `-- name: UpsertSentMessage :exec

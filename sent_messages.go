@@ -32,7 +32,7 @@ type sentMessageStore struct {
 
 func newSentMessageStore(ctx context.Context, dataDir string) (*sentMessageStore, error) {
 	if dataDir == "" {
-		return nil, fmt.Errorf("dataDir must not be empty")
+		return nil, errors.New("dataDir must not be empty")
 	}
 
 	dbPath := filepath.Join(dataDir, sentMessagesDBFile)
