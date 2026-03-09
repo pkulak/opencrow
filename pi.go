@@ -32,7 +32,6 @@ type PiProcess struct {
 	stdin      io.WriteCloser
 	stdout     *bufio.Scanner
 	done       chan struct{}
-	lastUse    time.Time
 	onToolCall func(ToolCallEvent) // optional callback for tool_execution_start events
 }
 
@@ -103,11 +102,6 @@ func (p *PiProcess) IsAlive() bool {
 	default:
 		return true
 	}
-}
-
-// LastUse returns the time of the last prompt.
-func (p *PiProcess) LastUse() time.Time {
-	return p.lastUse
 }
 
 // rpcEvent represents a JSON event from pi's stdout.
@@ -199,11 +193,10 @@ func startPiProcess(cmd *exec.Cmd, sessionDir string) (*PiProcess, error) {
 	}()
 
 	return &PiProcess{
-		cmd:     cmd,
-		stdin:   stdinPipe,
-		stdout:  scanner,
-		done:    done,
-		lastUse: time.Now(),
+		cmd:    cmd,
+		stdin:  stdinPipe,
+		stdout: scanner,
+		done:   done,
 	}, nil
 }
 
