@@ -30,6 +30,8 @@ func startHeartbeat(ctx context.Context, w *Worker, cfg HeartbeatConfig) {
 			case <-ticker.C:
 				if err := w.inbox.Enqueue(ctx, PriorityHeartbeat, sourceHeartbeat, "", ""); err != nil {
 					slog.Error("heartbeat: failed to enqueue", "error", err)
+
+					continue
 				}
 
 				w.Notify(PriorityHeartbeat)
