@@ -58,9 +58,9 @@ func (s *InboxStore) Dequeue(ctx context.Context) (Inbox, error) {
 
 // Requeue re-inserts an item that was interrupted. Heartbeat markers are
 // dropped since the timer will re-fire.
-func (s *InboxStore) Requeue(ctx context.Context, item Inbox) {
+func (s *InboxStore) Requeue(ctx context.Context, item Inbox) error {
 	if item.Source == sourceHeartbeat {
-		return
+		return nil
 	}
 
 	if err := s.queries.EnqueueInbox(ctx, EnqueueInboxParams{
@@ -69,8 +69,10 @@ func (s *InboxStore) Requeue(ctx context.Context, item Inbox) {
 		Content:  item.Content,
 		ReplyTo:  item.ReplyTo,
 	}); err != nil {
-		slog.Error("inbox: failed to requeue item", "source", item.Source, "error", err)
+		return fmt.Errorf("requeueing %s item: %w", item.Source, err)
 	}
+
+	return nil
 }
 
 // Count returns the number of items in the inbox.

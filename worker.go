@@ -271,12 +271,7 @@ func (w *Worker) processPrompt(ctx context.Context, item Inbox) {
 
 	convID := w.resolveRoomID()
 	if convID == "" {
-		if item.Source == sourceTrigger {
-			slog.Error("worker: no room ID for trigger, requeueing")
-			w.inbox.Requeue(context.Background(), item) //nolint:contextcheck // need a live ctx to persist
-		} else {
-			slog.Error("worker: no room ID available, dropping item", "source", item.Source)
-		}
+		w.handleNoRoomID(item) //nolint:contextcheck // requeue uses context.Background intentionally
 
 		return
 	}
@@ -335,12 +330,28 @@ func (w *Worker) buildPrompt(item Inbox) (string, bool) {
 	}
 }
 
+func (w *Worker) handleNoRoomID(item Inbox) {
+	if item.Source == sourceTrigger {
+		if err := w.inbox.Requeue(context.Background(), item); err != nil {
+			slog.Error("worker: failed to requeue trigger (item lost)", "error", err)
+		} else {
+			slog.Info("worker: no room ID for trigger, requeued")
+		}
+
+		return
+	}
+
+	slog.Error("worker: no room ID available, dropping item", "source", item.Source)
+}
+
 func (w *Worker) handlePromptError(ctx context.Context, item Inbox, convID string, err error) {
 	if wasPreempted(ctx, err) {
 		slog.Info("worker: preempted", "source", item.Source)
 
 		if item.Source != sourceHeartbeat {
-			w.inbox.Requeue(context.Background(), item) //nolint:contextcheck // item ctx is cancelled; need a live ctx to persist
+			if err := w.inbox.Requeue(context.Background(), item); err != nil { //nolint:contextcheck // item ctx is cancelled; need a live ctx to persist
+				slog.Error("worker: failed to requeue after preemption (item lost)", "source", item.Source, "error", err)
+			}
 		}
 
 		return
