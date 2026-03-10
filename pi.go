@@ -27,12 +27,23 @@ type ToolCallEvent struct {
 // PiProcess manages a single pi --mode rpc subprocess.
 // The caller (Worker) is responsible for serializing access — only one
 // goroutine calls sendAndWait at a time, so no mutex is needed.
+//
+// All stdin writes happen in the caller goroutine. The stdout reader
+// goroutine never writes to stdin directly; it sends extension UI
+// requests back through a channel so the caller can respond.
 type PiProcess struct {
 	cmd        *exec.Cmd
 	stdin      io.WriteCloser
 	stdout     *bufio.Scanner
 	done       chan struct{}
 	onToolCall func(ToolCallEvent) // optional callback for tool_execution_start events
+}
+
+// readerEvent is sent from the stdout reader goroutine back to the
+// caller when the reader encounters an extension_ui_request that needs
+// a stdin write. This avoids concurrent writes to stdin.
+type readerEvent struct {
+	uiRequest *rpcEvent
 }
 
 // StartPi spawns a pi --mode rpc subprocess for the given room.
@@ -272,23 +283,38 @@ func (p *PiProcess) waitForResult(ctx context.Context) (string, error) {
 		err  error
 	}
 
+	events := make(chan readerEvent, 4)
 	resultCh := make(chan result, 1)
 
 	go func() {
-		text, err := p.readUntilAgentEnd()
+		text, err := p.readUntilAgentEnd(events)
 		resultCh <- result{text, err}
 	}()
 
-	select {
-	case <-ctx.Done():
-		p.sendAbort()
+	for {
+		select {
+		case <-ctx.Done():
+			p.sendAbort()
 
-		// Still wait for the read goroutine to finish
-		<-resultCh
+			// Drain reader events until it finishes.
+			for {
+				select {
+				case <-events:
+				case r := <-resultCh:
+					_ = r // discard; we return the cancellation error
 
-		return "", fmt.Errorf("context cancelled: %w", ctx.Err())
-	case r := <-resultCh:
-		return r.text, r.err
+					return "", fmt.Errorf("context cancelled: %w", ctx.Err())
+				}
+			}
+
+		case evt := <-events:
+			if evt.uiRequest != nil {
+				p.autoRespondExtensionUI(*evt.uiRequest)
+			}
+
+		case r := <-resultCh:
+			return r.text, r.err
+		}
 	}
 }
 
@@ -298,26 +324,41 @@ func (p *PiProcess) waitForCompactResponse(ctx context.Context) (*CompactResult,
 		err     error
 	}
 
+	events := make(chan readerEvent, 4)
 	resultCh := make(chan result, 1)
 
 	go func() {
-		cr, err := p.readCompactResponse()
+		cr, err := p.readCompactResponse(events)
 		resultCh <- result{cr, err}
 	}()
 
-	select {
-	case <-ctx.Done():
-		p.sendAbort()
+	for {
+		select {
+		case <-ctx.Done():
+			p.sendAbort()
 
-		<-resultCh
+			for {
+				select {
+				case <-events:
+				case r := <-resultCh:
+					_ = r
 
-		return nil, fmt.Errorf("context cancelled: %w", ctx.Err())
-	case r := <-resultCh:
-		return r.compact, r.err
+					return nil, fmt.Errorf("context cancelled: %w", ctx.Err())
+				}
+			}
+
+		case evt := <-events:
+			if evt.uiRequest != nil {
+				p.autoRespondExtensionUI(*evt.uiRequest)
+			}
+
+		case r := <-resultCh:
+			return r.compact, r.err
+		}
 	}
 }
 
-func (p *PiProcess) readCompactResponse() (*CompactResult, error) {
+func (p *PiProcess) readCompactResponse(events chan<- readerEvent) (*CompactResult, error) {
 	for p.stdout.Scan() {
 		line := p.stdout.Text()
 		if line == "" {
@@ -333,20 +374,15 @@ func (p *PiProcess) readCompactResponse() (*CompactResult, error) {
 
 		slog.Debug("pi rpc event", "type", evt.Type)
 
-		if evt.Type != "response" || evt.Command != "compact" {
+		if evt.Type == "extension_ui_request" {
+			events <- readerEvent{uiRequest: &evt}
+
 			continue
 		}
 
-		if evt.Success != nil && !*evt.Success {
-			return nil, fmt.Errorf("compact failed: %s", evt.Error)
+		if cr, ok, err := parseCompactEvent(evt); ok || err != nil {
+			return cr, err
 		}
-
-		var cr CompactResult
-		if err := json.Unmarshal(evt.Data, &cr); err != nil {
-			return nil, fmt.Errorf("parsing compact result: %w", err)
-		}
-
-		return &cr, nil
 	}
 
 	if err := p.stdout.Err(); err != nil {
@@ -356,7 +392,24 @@ func (p *PiProcess) readCompactResponse() (*CompactResult, error) {
 	return nil, errors.New("pi process closed stdout (EOF)")
 }
 
-func (p *PiProcess) readUntilAgentEnd() (string, error) {
+func parseCompactEvent(evt rpcEvent) (*CompactResult, bool, error) {
+	if evt.Type != "response" || evt.Command != "compact" {
+		return nil, false, nil
+	}
+
+	if evt.Success != nil && !*evt.Success {
+		return nil, false, fmt.Errorf("compact failed: %s", evt.Error)
+	}
+
+	var cr CompactResult
+	if err := json.Unmarshal(evt.Data, &cr); err != nil {
+		return nil, false, fmt.Errorf("parsing compact result: %w", err)
+	}
+
+	return &cr, true, nil
+}
+
+func (p *PiProcess) readUntilAgentEnd(events chan<- readerEvent) (string, error) {
 	for p.stdout.Scan() {
 		line := p.stdout.Text()
 
@@ -364,7 +417,7 @@ func (p *PiProcess) readUntilAgentEnd() (string, error) {
 			continue
 		}
 
-		text, done, err := p.handleRPCLine(line)
+		text, done, err := p.handleRPCLine(line, events)
 		if err != nil {
 			return "", err
 		}
@@ -381,7 +434,7 @@ func (p *PiProcess) readUntilAgentEnd() (string, error) {
 	return "", errors.New("pi process closed stdout (EOF)")
 }
 
-func (p *PiProcess) handleRPCLine(line string) (string, bool, error) {
+func (p *PiProcess) handleRPCLine(line string, events chan<- readerEvent) (string, bool, error) {
 	var evt rpcEvent
 	if err := json.Unmarshal([]byte(line), &evt); err != nil {
 		slog.Warn("malformed JSON from pi", "error", err, "line", line)
@@ -409,7 +462,7 @@ func (p *PiProcess) handleRPCLine(line string) (string, bool, error) {
 		}
 
 	case "extension_ui_request":
-		p.autoRespondExtensionUI(evt)
+		events <- readerEvent{uiRequest: &evt}
 
 	case "response":
 		if evt.Success != nil && !*evt.Success {
@@ -423,22 +476,11 @@ func (p *PiProcess) handleRPCLine(line string) (string, bool, error) {
 func (p *PiProcess) autoRespondExtensionUI(evt rpcEvent) {
 	switch evt.Method {
 	case "select", "confirm", "input", "editor":
-		resp := map[string]any{
+		if err := p.sendCommand(map[string]any{
 			"type":      "extension_ui_response",
 			"id":        evt.ID,
 			"cancelled": true,
-		}
-
-		data, err := json.Marshal(resp)
-		if err != nil {
-			slog.Warn("failed to marshal extension_ui_response", "error", err)
-
-			return
-		}
-
-		data = append(data, '\n')
-
-		if _, err := p.stdin.Write(data); err != nil {
+		}); err != nil {
 			slog.Warn("failed to send extension_ui_response", "error", err)
 		}
 	}
