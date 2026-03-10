@@ -39,11 +39,13 @@ type PiProcess struct {
 	onToolCall func(ToolCallEvent) // optional callback for tool_execution_start events
 }
 
-// readerEvent is sent from the stdout reader goroutine back to the
-// caller when the reader encounters an extension_ui_request that needs
-// a stdin write. This avoids concurrent writes to stdin.
-type readerEvent struct {
-	uiRequest *rpcEvent
+// rpcParsed is sent from the stdout reader goroutine to the caller for
+// every parsed event. The caller handles stdin writes (extension UI
+// responses, abort) so all writes stay in one goroutine.
+type rpcParsed struct {
+	event rpcEvent
+	err   error // non-nil means the reader encountered a terminal error
+	eof   bool  // reader finished (stdout closed)
 }
 
 // StartPi spawns a pi --mode rpc subprocess for the given room.
@@ -277,88 +279,12 @@ func (p *PiProcess) sendAbort() {
 	}
 }
 
-func (p *PiProcess) waitForResult(ctx context.Context) (string, error) {
-	type result struct {
-		text string
-		err  error
-	}
-
-	events := make(chan readerEvent, 4)
-	resultCh := make(chan result, 1)
-
-	go func() {
-		text, err := p.readUntilAgentEnd(events)
-		resultCh <- result{text, err}
-	}()
-
-	for {
-		select {
-		case <-ctx.Done():
-			p.sendAbort()
-
-			// Drain reader events until it finishes.
-			for {
-				select {
-				case <-events:
-				case r := <-resultCh:
-					_ = r // discard; we return the cancellation error
-
-					return "", fmt.Errorf("context cancelled: %w", ctx.Err())
-				}
-			}
-
-		case evt := <-events:
-			if evt.uiRequest != nil {
-				p.autoRespondExtensionUI(*evt.uiRequest)
-			}
-
-		case r := <-resultCh:
-			return r.text, r.err
-		}
-	}
-}
-
-func (p *PiProcess) waitForCompactResponse(ctx context.Context) (*CompactResult, error) {
-	type result struct {
-		compact *CompactResult
-		err     error
-	}
-
-	events := make(chan readerEvent, 4)
-	resultCh := make(chan result, 1)
-
-	go func() {
-		cr, err := p.readCompactResponse(events)
-		resultCh <- result{cr, err}
-	}()
-
-	for {
-		select {
-		case <-ctx.Done():
-			p.sendAbort()
-
-			for {
-				select {
-				case <-events:
-				case r := <-resultCh:
-					_ = r
-
-					return nil, fmt.Errorf("context cancelled: %w", ctx.Err())
-				}
-			}
-
-		case evt := <-events:
-			if evt.uiRequest != nil {
-				p.autoRespondExtensionUI(*evt.uiRequest)
-			}
-
-		case r := <-resultCh:
-			return r.compact, r.err
-		}
-	}
-}
-
-func (p *PiProcess) readCompactResponse(events chan<- readerEvent) (*CompactResult, error) {
+// readEvents scans pi's stdout line by line, parses each JSON event,
+// and sends it to the caller through ch. The caller goroutine handles
+// all stdin writes (abort, extension UI responses). Blocks until stdout
+// is closed or a parse error occurs, then sends an eof/error sentinel
+// and returns.
+func (p *PiProcess) readEvents(ch chan<- rpcParsed) {
 	for p.stdout.Scan() {
 		line := p.stdout.Text()
 		if line == "" {
@@ -374,84 +300,70 @@ func (p *PiProcess) readCompactResponse(events chan<- readerEvent) (*CompactResu
 
 		slog.Debug("pi rpc event", "type", evt.Type)
 
-		if evt.Type == "extension_ui_request" {
-			events <- readerEvent{uiRequest: &evt}
-
-			continue
-		}
-
-		if cr, ok, err := parseCompactEvent(evt); ok || err != nil {
-			return cr, err
-		}
+		ch <- rpcParsed{event: evt}
 	}
 
 	if err := p.stdout.Err(); err != nil {
-		return nil, fmt.Errorf("reading pi stdout: %w", err)
+		ch <- rpcParsed{err: fmt.Errorf("reading pi stdout: %w", err)}
+
+		return
 	}
 
-	return nil, errors.New("pi process closed stdout (EOF)")
+	ch <- rpcParsed{eof: true}
 }
 
-func parseCompactEvent(evt rpcEvent) (*CompactResult, bool, error) {
-	if evt.Type != "response" || evt.Command != "compact" {
-		return nil, false, nil
-	}
+// drainEvents runs the caller-side event loop: it reads parsed events
+// from the reader goroutine, handles side effects (extension UI cancel,
+// tool call notifications), and calls handleFn for each event.
+// handleFn returns true when the desired termination event has been
+// seen. On context cancellation an abort is sent and remaining events
+// are drained.
+func (p *PiProcess) drainEvents(ctx context.Context, ch <-chan rpcParsed, handleFn func(rpcEvent) (bool, error)) error {
+	aborted := false
 
-	if evt.Success != nil && !*evt.Success {
-		return nil, false, fmt.Errorf("compact failed: %s", evt.Error)
-	}
-
-	var cr CompactResult
-	if err := json.Unmarshal(evt.Data, &cr); err != nil {
-		return nil, false, fmt.Errorf("parsing compact result: %w", err)
-	}
-
-	return &cr, true, nil
-}
-
-func (p *PiProcess) readUntilAgentEnd(events chan<- readerEvent) (string, error) {
-	for p.stdout.Scan() {
-		line := p.stdout.Text()
-
-		if line == "" {
-			continue
+	for parsed := range ch {
+		if parsed.err != nil {
+			return parsed.err
 		}
 
-		text, done, err := p.handleRPCLine(line, events)
+		if parsed.eof {
+			return errors.New("pi process closed stdout (EOF)")
+		}
+
+		// Check for cancellation before processing.
+		if !aborted && ctx.Err() != nil {
+			p.sendAbort()
+
+			aborted = true
+		}
+
+		if aborted {
+			continue // drain remaining events after abort
+		}
+
+		if err := p.handleSideEffects(parsed.event); err != nil {
+			return err
+		}
+
+		done, err := handleFn(parsed.event)
 		if err != nil {
-			return "", err
+			return err
 		}
 
 		if done {
-			return text, nil
+			return nil
 		}
 	}
 
-	if err := p.stdout.Err(); err != nil {
-		return "", fmt.Errorf("reading pi stdout: %w", err)
-	}
-
-	return "", errors.New("pi process closed stdout (EOF)")
+	return errors.New("event channel closed unexpectedly")
 }
 
-func (p *PiProcess) handleRPCLine(line string, events chan<- readerEvent) (string, bool, error) {
-	var evt rpcEvent
-	if err := json.Unmarshal([]byte(line), &evt); err != nil {
-		slog.Warn("malformed JSON from pi", "error", err, "line", line)
-
-		return "", false, nil
-	}
-
-	slog.Debug("pi rpc event", "type", evt.Type)
-
+// handleSideEffects processes events that are common to all commands:
+// extension UI auto-cancel and tool call notifications.
+func (p *PiProcess) handleSideEffects(evt rpcEvent) error {
 	switch evt.Type {
-	case "agent_end":
-		text := extractLastAssistantText(evt.Messages)
-		if text == "" {
-			slog.Warn("agent_end contained no assistant text", "messages_len", len(evt.Messages))
-		}
-
-		return text, true, nil
+	case "extension_ui_request":
+		p.autoRespondExtensionUI(evt)
 
 	case "tool_execution_start":
 		if p.onToolCall != nil {
@@ -461,16 +373,79 @@ func (p *PiProcess) handleRPCLine(line string, events chan<- readerEvent) (strin
 			})
 		}
 
-	case "extension_ui_request":
-		events <- readerEvent{uiRequest: &evt}
-
 	case "response":
 		if evt.Success != nil && !*evt.Success {
-			return "", false, fmt.Errorf("pi rejected command %q: %s", evt.Command, evt.Error)
+			return fmt.Errorf("pi rejected command %q: %s", evt.Command, evt.Error)
 		}
 	}
 
-	return "", false, nil
+	return nil
+}
+
+func (p *PiProcess) waitForResult(ctx context.Context) (string, error) {
+	ch := make(chan rpcParsed, 4)
+
+	go p.readEvents(ch)
+
+	var reply string
+
+	err := p.drainEvents(ctx, ch, func(evt rpcEvent) (bool, error) {
+		if evt.Type != "agent_end" {
+			return false, nil
+		}
+
+		reply = extractLastAssistantText(evt.Messages)
+		if reply == "" {
+			slog.Warn("agent_end contained no assistant text", "messages_len", len(evt.Messages))
+		}
+
+		return true, nil
+	})
+	if err != nil {
+		if ctx.Err() != nil {
+			return "", fmt.Errorf("context cancelled: %w", ctx.Err())
+		}
+
+		return "", err
+	}
+
+	return reply, nil
+}
+
+func (p *PiProcess) waitForCompactResponse(ctx context.Context) (*CompactResult, error) {
+	ch := make(chan rpcParsed, 4)
+
+	go p.readEvents(ch)
+
+	var result *CompactResult
+
+	err := p.drainEvents(ctx, ch, func(evt rpcEvent) (bool, error) {
+		if evt.Type != "response" || evt.Command != "compact" {
+			return false, nil
+		}
+
+		if evt.Success != nil && !*evt.Success {
+			return false, fmt.Errorf("compact failed: %s", evt.Error)
+		}
+
+		var cr CompactResult
+		if err := json.Unmarshal(evt.Data, &cr); err != nil {
+			return false, fmt.Errorf("parsing compact result: %w", err)
+		}
+
+		result = &cr
+
+		return true, nil
+	})
+	if err != nil {
+		if ctx.Err() != nil {
+			return nil, fmt.Errorf("context cancelled: %w", ctx.Err())
+		}
+
+		return nil, err
+	}
+
+	return result, nil
 }
 
 func (p *PiProcess) autoRespondExtensionUI(evt rpcEvent) {
