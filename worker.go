@@ -338,14 +338,11 @@ func (w *Worker) processPrompt(ctx context.Context, item Inbox) bool {
 	w.be.SetTyping(ctx, convID, true)
 	defer w.be.SetTyping(context.Background(), convID, false) //nolint:contextcheck // must clear typing even after preemption
 
-	pi, err := w.ensurePi(ctx)
+	pi, reply, err := w.sendWithRetry(ctx, prompt)
 	if err != nil {
-		return w.handlePiError(ctx, item, convID, "failed to start pi", err, false)
-	}
+		killPi := pi != nil
 
-	reply, err := pi.sendAndWait(ctx, prompt)
-	if err != nil {
-		return w.handlePiError(ctx, item, convID, "pi prompt failed", err, true)
+		return w.handlePiError(ctx, item, convID, "pi prompt failed", err, killPi)
 	}
 
 	w.mu.Lock()
@@ -465,6 +462,37 @@ func (w *Worker) processCompact(ctx context.Context) {
 func wasPreempted(ctx context.Context, err error) bool {
 	return errors.Is(err, context.Canceled) || errors.Is(err, context.DeadlineExceeded) ||
 		ctx.Err() != nil
+}
+
+// sendWithRetry sends a prompt to pi, retrying once with a fresh
+// process if the first attempt fails due to a stale/crashed process.
+func (w *Worker) sendWithRetry(ctx context.Context, prompt string) (*PiProcess, string, error) {
+	pi, err := w.ensurePi(ctx)
+	if err != nil {
+		return nil, "", err
+	}
+
+	reply, err := pi.sendAndWait(ctx, prompt)
+	if err == nil {
+		return pi, reply, nil
+	}
+
+	// Don't retry on context cancellation (preemption/shutdown).
+	if ctx.Err() != nil {
+		return pi, "", err
+	}
+
+	slog.Info("worker: pi exited, starting fresh process")
+	w.stopPi()
+
+	pi, err = w.ensurePi(ctx)
+	if err != nil {
+		return nil, "", err
+	}
+
+	reply, err = pi.sendAndWait(ctx, prompt)
+
+	return pi, reply, err
 }
 
 func (w *Worker) ensurePi(ctx context.Context) (*PiProcess, error) {
