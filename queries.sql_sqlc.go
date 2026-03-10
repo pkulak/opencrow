@@ -94,6 +94,42 @@ func (q *Queries) DequeueInbox(ctx context.Context) (Inbox, error) {
 	return i, err
 }
 
+const dequeueUserItems = `-- name: DequeueUserItems :many
+DELETE FROM inbox
+WHERE source = 'user'
+RETURNING id, priority, source, content, reply_to, created_at
+`
+
+func (q *Queries) DequeueUserItems(ctx context.Context) ([]Inbox, error) {
+	rows, err := q.db.QueryContext(ctx, dequeueUserItems)
+	if err != nil {
+		return nil, err
+	}
+	defer rows.Close()
+	var items []Inbox
+	for rows.Next() {
+		var i Inbox
+		if err := rows.Scan(
+			&i.ID,
+			&i.Priority,
+			&i.Source,
+			&i.Content,
+			&i.ReplyTo,
+			&i.CreatedAt,
+		); err != nil {
+			return nil, err
+		}
+		items = append(items, i)
+	}
+	if err := rows.Close(); err != nil {
+		return nil, err
+	}
+	if err := rows.Err(); err != nil {
+		return nil, err
+	}
+	return items, nil
+}
+
 const enqueueHeartbeatIfEmpty = `-- name: EnqueueHeartbeatIfEmpty :execresult
 INSERT INTO inbox (priority, source, content, reply_to)
 SELECT ?, 'heartbeat', '', ''

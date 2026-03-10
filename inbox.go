@@ -5,6 +5,7 @@ import (
 	"database/sql"
 	"fmt"
 	"log/slog"
+	"slices"
 )
 
 // Priority levels for inbox items. Lower number = higher priority.
@@ -75,6 +76,23 @@ func (s *InboxStore) Requeue(ctx context.Context, item Inbox) error {
 	}
 
 	return nil
+}
+
+// DequeueUserBatch atomically removes all user items from the inbox,
+// returning them sorted by ID (insertion order). Returns nil (not an
+// error) if no user items exist.
+func (s *InboxStore) DequeueUserBatch(ctx context.Context) ([]Inbox, error) {
+	items, err := s.queries.DequeueUserItems(ctx)
+	if err != nil {
+		return nil, fmt.Errorf("dequeuing user batch: %w", err)
+	}
+
+	// SQLite's DELETE ... RETURNING doesn't guarantee order.
+	slices.SortFunc(items, func(a, b Inbox) int {
+		return cmp.Compare(a.ID, b.ID)
+	})
+
+	return items, nil
 }
 
 // Count returns the number of items in the inbox.

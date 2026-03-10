@@ -44,6 +44,11 @@ DELETE FROM inbox WHERE id = ?;
 -- name: DeleteStaleItems :exec
 DELETE FROM inbox WHERE source IN ('heartbeat', 'compact');
 
+-- name: DequeueUserItems :many
+DELETE FROM inbox
+WHERE source = 'user'
+RETURNING id, priority, source, content, reply_to, created_at;
+
 -- name: CountInbox :one
 SELECT count(*) FROM inbox;
 
