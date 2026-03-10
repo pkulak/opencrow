@@ -79,3 +79,19 @@ func (s *InboxStore) Requeue(ctx context.Context, item Inbox) error {
 func (s *InboxStore) Count(ctx context.Context) (int64, error) {
 	return s.queries.CountInbox(ctx)
 }
+
+// EnqueueHeartbeat atomically inserts a heartbeat marker only if none
+// is already pending. Returns true if a row was inserted.
+func (s *InboxStore) EnqueueHeartbeat(ctx context.Context) (bool, error) {
+	result, err := s.queries.EnqueueHeartbeatIfEmpty(ctx, PriorityHeartbeat)
+	if err != nil {
+		return false, fmt.Errorf("enqueuing heartbeat: %w", err)
+	}
+
+	n, err := result.RowsAffected()
+	if err != nil {
+		return false, fmt.Errorf("checking heartbeat insert result: %w", err)
+	}
+
+	return n > 0, nil
+}

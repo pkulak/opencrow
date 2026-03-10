@@ -28,8 +28,15 @@ func startHeartbeat(ctx context.Context, w *Worker, cfg HeartbeatConfig) {
 			case <-ctx.Done():
 				return
 			case <-ticker.C:
-				if err := w.inbox.Enqueue(ctx, PriorityHeartbeat, sourceHeartbeat, "", ""); err != nil {
+				inserted, err := w.inbox.EnqueueHeartbeat(ctx)
+				if err != nil {
 					slog.Error("heartbeat: failed to enqueue", "error", err)
+
+					continue
+				}
+
+				if !inserted {
+					slog.Debug("heartbeat: skipping, one already queued")
 
 					continue
 				}

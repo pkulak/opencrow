@@ -7,6 +7,7 @@ package main
 
 import (
 	"context"
+	"database/sql"
 )
 
 const countInbox = `-- name: CountInbox :one
@@ -91,6 +92,16 @@ func (q *Queries) DequeueInbox(ctx context.Context) (Inbox, error) {
 		&i.CreatedAt,
 	)
 	return i, err
+}
+
+const enqueueHeartbeatIfEmpty = `-- name: EnqueueHeartbeatIfEmpty :execresult
+INSERT INTO inbox (priority, source, content, reply_to)
+SELECT ?, 'heartbeat', '', ''
+WHERE NOT EXISTS (SELECT 1 FROM inbox WHERE source = 'heartbeat')
+`
+
+func (q *Queries) EnqueueHeartbeatIfEmpty(ctx context.Context, priority int64) (sql.Result, error) {
+	return q.db.ExecContext(ctx, enqueueHeartbeatIfEmpty, priority)
 }
 
 const enqueueInbox = `-- name: EnqueueInbox :exec

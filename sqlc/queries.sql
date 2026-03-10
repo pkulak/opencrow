@@ -46,3 +46,8 @@ DELETE FROM inbox WHERE source = 'heartbeat';
 
 -- name: CountInbox :one
 SELECT count(*) FROM inbox;
+
+-- name: EnqueueHeartbeatIfEmpty :execresult
+INSERT INTO inbox (priority, source, content, reply_to)
+SELECT ?, 'heartbeat', '', ''
+WHERE NOT EXISTS (SELECT 1 FROM inbox WHERE source = 'heartbeat');
