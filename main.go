@@ -178,7 +178,7 @@ func wireServices(ctx context.Context, cfg *Config, db *sql.DB, inbox *InboxStor
 	worker.SetApp(app)
 	worker.SetBackend(b)
 
-	cfg.Pi.SystemPrompt = app.systemPrompt(cfg.Pi.SystemPrompt)
+	worker.piCfg.SystemPrompt = app.systemPrompt(worker.piCfg.SystemPrompt)
 
 	// Start background services.
 	startHeartbeat(ctx, worker, cfg.Heartbeat)
