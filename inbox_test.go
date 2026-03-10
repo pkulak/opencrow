@@ -128,29 +128,35 @@ func TestWorker_NoPreemptSamePriority(t *testing.T) {
 	}
 }
 
-func TestInbox_ClearsStaleHeartbeatsOnInit(t *testing.T) {
-	t.Parallel()
+// seedInbox inserts rows directly into the inbox table, bypassing
+// NewInboxStore cleanup, to simulate items left over from a crash.
+func seedInbox(t *testing.T, db *sql.DB, rows []string) {
+	t.Helper()
 
 	ctx := context.Background()
 
-	db, err := sql.Open("sqlite", ":memory:?_journal_mode=WAL&_busy_timeout=5000")
-	if err != nil {
-		t.Fatal(err)
+	for _, q := range rows {
+		if _, err := db.ExecContext(ctx, q); err != nil {
+			t.Fatal(err)
+		}
 	}
+}
 
-	defer db.Close()
+func TestInbox_ClearsStaleItemsOnInit(t *testing.T) {
+	t.Parallel()
 
-	if _, err := db.ExecContext(ctx, dbSchema); err != nil {
-		t.Fatal(err)
-	}
+	ctx := context.Background()
+	db := newTestDB(ctx, t)
 
-	if _, err := db.ExecContext(ctx, "INSERT INTO inbox (priority, source, content) VALUES (2, 'heartbeat', '')"); err != nil {
-		t.Fatal(err)
-	}
-
-	if _, err := db.ExecContext(ctx, "INSERT INTO inbox (priority, source, content) VALUES (1, 'trigger', 'keep me')"); err != nil {
-		t.Fatal(err)
-	}
+	// Heartbeat and compact items have in-memory state that doesn't
+	// survive a restart; both must be purged on init.
+	seedInbox(t, db, []string{
+		"INSERT INTO inbox (priority, source, content) VALUES (2, 'heartbeat', '')",
+		"INSERT INTO inbox (priority, source, content) VALUES (0, 'compact', '')",
+		// These should survive.
+		"INSERT INTO inbox (priority, source, content) VALUES (0, 'user', 'keep me')",
+		"INSERT INTO inbox (priority, source, content) VALUES (1, 'trigger', 'event data')",
+	})
 
 	inbox, err := NewInboxStore(ctx, db)
 	if err != nil {
@@ -160,15 +166,22 @@ func TestInbox_ClearsStaleHeartbeatsOnInit(t *testing.T) {
 	count, err := inbox.Count(ctx)
 	must(t, err)
 
-	if count != 1 {
-		t.Fatalf("count = %d, want 1 (heartbeat should be cleared, trigger kept)", count)
+	if count != 2 {
+		t.Fatalf("count = %d, want 2 (heartbeat and compact should be cleared)", count)
 	}
 
-	item, err := inbox.Dequeue(ctx)
+	item1, err := inbox.Dequeue(ctx)
 	must(t, err)
 
-	if item.Source != sourceTrigger {
-		t.Errorf("surviving item source = %q, want %q", item.Source, sourceTrigger)
+	if item1.Source != sourceUser {
+		t.Errorf("first item source = %q, want %q", item1.Source, sourceUser)
+	}
+
+	item2, err := inbox.Dequeue(ctx)
+	must(t, err)
+
+	if item2.Source != sourceTrigger {
+		t.Errorf("second item source = %q, want %q", item2.Source, sourceTrigger)
 	}
 }
 
@@ -225,6 +238,83 @@ func TestInbox_Persistence(t *testing.T) {
 
 	if item.Content != "survived crash" {
 		t.Errorf("Content = %q, want %q", item.Content, "survived crash")
+	}
+}
+
+func TestWorker_MergeUserItems(t *testing.T) {
+	t.Parallel()
+
+	ctx := context.Background()
+	inbox := newTestInbox(ctx, t)
+
+	worker := NewWorker(inbox, PiConfig{SessionDir: t.TempDir()}, HeartbeatConfig{}, "")
+
+	// Enqueue extra user messages that mergeUserItems should fold in.
+	must(t, inbox.Enqueue(ctx, PriorityUser, sourceUser, "second", "reply-2"))
+	must(t, inbox.Enqueue(ctx, PriorityUser, sourceUser, "third", "reply-3"))
+
+	first := Inbox{Source: sourceUser, Content: "first", ReplyTo: "reply-1"}
+	merged := worker.mergeUserItems(ctx, first)
+
+	if merged.Content != "first\nsecond\nthird" {
+		t.Errorf("Content = %q, want %q", merged.Content, "first\nsecond\nthird")
+	}
+
+	if merged.ReplyTo != "reply-3" {
+		t.Errorf("ReplyTo = %q, want %q", merged.ReplyTo, "reply-3")
+	}
+
+	count, err := inbox.Count(ctx)
+	must(t, err)
+
+	if count != 0 {
+		t.Errorf("inbox should be empty after merge, got %d", count)
+	}
+}
+
+func TestInbox_DequeueUserBatch(t *testing.T) {
+	t.Parallel()
+
+	ctx := context.Background()
+	inbox := newTestInbox(ctx, t)
+
+	must(t, inbox.Enqueue(ctx, PriorityUser, sourceUser, "first", "reply-1"))
+	must(t, inbox.Enqueue(ctx, PriorityUser, sourceUser, "second", "reply-2"))
+	must(t, inbox.Enqueue(ctx, PriorityTrigger, sourceTrigger, "event", ""))
+
+	items, err := inbox.DequeueUserBatch(ctx)
+	must(t, err)
+
+	if len(items) != 2 {
+		t.Fatalf("got %d items, want 2", len(items))
+	}
+
+	if items[0].Content != "first" || items[1].Content != "second" {
+		t.Errorf("contents = [%q, %q], want [first, second]", items[0].Content, items[1].Content)
+	}
+
+	// Trigger should still be there.
+	count, err := inbox.Count(ctx)
+	must(t, err)
+
+	if count != 1 {
+		t.Fatalf("remaining count = %d, want 1", count)
+	}
+}
+
+func TestInbox_DequeueUserBatch_Empty(t *testing.T) {
+	t.Parallel()
+
+	ctx := context.Background()
+	inbox := newTestInbox(ctx, t)
+
+	must(t, inbox.Enqueue(ctx, PriorityTrigger, sourceTrigger, "event", ""))
+
+	items, err := inbox.DequeueUserBatch(ctx)
+	must(t, err)
+
+	if len(items) != 0 {
+		t.Fatalf("got %d items, want 0", len(items))
 	}
 }
 

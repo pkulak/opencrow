@@ -251,10 +251,45 @@ func (w *Worker) drainOnce(ctx context.Context) {
 			return
 		}
 
+		if item.Source == sourceUser {
+			item = w.mergeUserItems(ctx, item)
+		}
+
 		if w.processItem(ctx, item) {
 			return
 		}
 	}
+}
+
+// mergeUserItems folds any additional queued user messages into item so
+// the agent sees one combined prompt instead of N separate turns.
+func (w *Worker) mergeUserItems(ctx context.Context, item Inbox) Inbox {
+	extra, err := w.inbox.DequeueUserBatch(ctx)
+	if err != nil {
+		slog.Error("worker: failed to dequeue user batch", "error", err)
+
+		return item
+	}
+
+	if len(extra) == 0 {
+		return item
+	}
+
+	slog.Info("worker: merging user messages", "count", 1+len(extra))
+
+	var sb strings.Builder
+
+	sb.WriteString(item.Content)
+
+	for _, e := range extra {
+		sb.WriteByte('\n')
+		sb.WriteString(e.Content)
+	}
+
+	item.Content = sb.String()
+	item.ReplyTo = extra[len(extra)-1].ReplyTo
+
+	return item
 }
 
 // processItem handles one inbox item. Returns true if drainOnce should
@@ -303,14 +338,11 @@ func (w *Worker) processPrompt(ctx context.Context, item Inbox) bool {
 	w.be.SetTyping(ctx, convID, true)
 	defer w.be.SetTyping(context.Background(), convID, false) //nolint:contextcheck // must clear typing even after preemption
 
-	pi, err := w.ensurePi(ctx)
+	pi, reply, err := w.sendWithRetry(ctx, prompt)
 	if err != nil {
-		return w.handlePiError(ctx, item, convID, "failed to start pi", err, false)
-	}
+		killPi := pi != nil
 
-	reply, err := pi.sendAndWait(ctx, prompt)
-	if err != nil {
-		return w.handlePiError(ctx, item, convID, "pi prompt failed", err, true)
+		return w.handlePiError(ctx, item, convID, "pi prompt failed", err, killPi)
 	}
 
 	w.mu.Lock()
@@ -430,6 +462,37 @@ func (w *Worker) processCompact(ctx context.Context) {
 func wasPreempted(ctx context.Context, err error) bool {
 	return errors.Is(err, context.Canceled) || errors.Is(err, context.DeadlineExceeded) ||
 		ctx.Err() != nil
+}
+
+// sendWithRetry sends a prompt to pi, retrying once with a fresh
+// process if the first attempt fails due to a stale/crashed process.
+func (w *Worker) sendWithRetry(ctx context.Context, prompt string) (*PiProcess, string, error) {
+	pi, err := w.ensurePi(ctx)
+	if err != nil {
+		return nil, "", err
+	}
+
+	reply, err := pi.sendAndWait(ctx, prompt)
+	if err == nil {
+		return pi, reply, nil
+	}
+
+	// Don't retry on context cancellation (preemption/shutdown).
+	if ctx.Err() != nil {
+		return pi, "", err
+	}
+
+	slog.Info("worker: pi exited, starting fresh process")
+	w.stopPi()
+
+	pi, err = w.ensurePi(ctx)
+	if err != nil {
+		return nil, "", err
+	}
+
+	reply, err = pi.sendAndWait(ctx, prompt)
+
+	return pi, reply, err
 }
 
 func (w *Worker) ensurePi(ctx context.Context) (*PiProcess, error) {

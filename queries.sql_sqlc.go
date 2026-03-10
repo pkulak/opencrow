@@ -32,15 +32,6 @@ func (q *Queries) CountOutbox(ctx context.Context, conversationID string) (int64
 	return count, err
 }
 
-const deleteHeartbeatItems = `-- name: DeleteHeartbeatItems :exec
-DELETE FROM inbox WHERE source = 'heartbeat'
-`
-
-func (q *Queries) DeleteHeartbeatItems(ctx context.Context) error {
-	_, err := q.db.ExecContext(ctx, deleteHeartbeatItems)
-	return err
-}
-
 const deleteInboxItem = `-- name: DeleteInboxItem :exec
 DELETE FROM inbox WHERE id = ?
 `
@@ -70,6 +61,15 @@ func (q *Queries) DeleteOldestOutbox(ctx context.Context, arg DeleteOldestOutbox
 	return err
 }
 
+const deleteStaleItems = `-- name: DeleteStaleItems :exec
+DELETE FROM inbox WHERE source IN ('heartbeat', 'compact')
+`
+
+func (q *Queries) DeleteStaleItems(ctx context.Context) error {
+	_, err := q.db.ExecContext(ctx, deleteStaleItems)
+	return err
+}
+
 const dequeueInbox = `-- name: DequeueInbox :one
 DELETE FROM inbox
 WHERE id = (
@@ -92,6 +92,42 @@ func (q *Queries) DequeueInbox(ctx context.Context) (Inbox, error) {
 		&i.CreatedAt,
 	)
 	return i, err
+}
+
+const dequeueUserItems = `-- name: DequeueUserItems :many
+DELETE FROM inbox
+WHERE source = 'user'
+RETURNING id, priority, source, content, reply_to, created_at
+`
+
+func (q *Queries) DequeueUserItems(ctx context.Context) ([]Inbox, error) {
+	rows, err := q.db.QueryContext(ctx, dequeueUserItems)
+	if err != nil {
+		return nil, err
+	}
+	defer rows.Close()
+	var items []Inbox
+	for rows.Next() {
+		var i Inbox
+		if err := rows.Scan(
+			&i.ID,
+			&i.Priority,
+			&i.Source,
+			&i.Content,
+			&i.ReplyTo,
+			&i.CreatedAt,
+		); err != nil {
+			return nil, err
+		}
+		items = append(items, i)
+	}
+	if err := rows.Close(); err != nil {
+		return nil, err
+	}
+	if err := rows.Err(); err != nil {
+		return nil, err
+	}
+	return items, nil
 }
 
 const enqueueHeartbeatIfEmpty = `-- name: EnqueueHeartbeatIfEmpty :execresult
