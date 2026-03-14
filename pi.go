@@ -383,7 +383,12 @@ func logSimpleRPCEvent(evt rpcEvent) {
 	case rpcTypeAgentEnd:
 		slog.Info("pi: agent finished")
 	case "auto_compaction_start":
-		slog.Info("pi: auto-compaction started")
+		attrs := []any{}
+		if evt.Reason != "" {
+			attrs = append(attrs, "reason", evt.Reason)
+		}
+
+		slog.Info("pi: auto-compaction started", attrs...)
 	case "auto_compaction_end":
 		slog.Info("pi: auto-compaction finished")
 	case "turn_start", "turn_end", "message_start", "message_end", rpcTypeExtensionUIRequest:
