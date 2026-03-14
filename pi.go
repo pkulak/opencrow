@@ -335,23 +335,40 @@ func readEvents(scanner *bufio.Scanner, ch chan<- rpcParsed) {
 
 const toolArgMaxLen = 512
 
+// RPC event type constants for events referenced in code.
+// The pi protocol may add new event types at any time;
+// unknown types are handled by default branches.
+const (
+	rpcTypeResponse            = "response"
+	rpcTypeAgentStart          = "agent_start"
+	rpcTypeAgentEnd            = "agent_end"
+	rpcTypeMessageUpdate       = "message_update"
+	rpcTypeToolExecutionStart  = "tool_execution_start"
+	rpcTypeToolExecutionEnd    = "tool_execution_end"
+	rpcTypeToolExecutionUpdate = "tool_execution_update"
+	rpcTypeAutoRetryStart      = "auto_retry_start"
+	rpcTypeAutoRetryEnd        = "auto_retry_end"
+	rpcTypeExtensionError      = "extension_error"
+	rpcTypeExtensionUIRequest  = "extension_ui_request"
+)
+
 // logRPCEvent logs a pi RPC event with context-appropriate level and fields.
 // Noisy streaming events (message_update, tool_execution_update) are suppressed.
 func logRPCEvent(evt rpcEvent) {
 	switch evt.Type {
-	case "message_update", "tool_execution_update":
+	case rpcTypeMessageUpdate, rpcTypeToolExecutionUpdate:
 		// Suppressed — streaming deltas are too noisy.
-	case "tool_execution_start":
+	case rpcTypeToolExecutionStart:
 		slog.Info("pi: tool started", logToolArgs(evt)...)
-	case "tool_execution_end":
+	case rpcTypeToolExecutionEnd:
 		slog.Info("pi: tool finished", "tool", evt.ToolName)
-	case "auto_retry_start":
+	case rpcTypeAutoRetryStart:
 		logAutoRetryStart(evt)
-	case "auto_retry_end":
+	case rpcTypeAutoRetryEnd:
 		logAutoRetryEnd(evt)
-	case "extension_error":
+	case rpcTypeExtensionError:
 		logExtensionError(evt)
-	case "response": //nolint:goconst // extracted to constant in follow-up commit
+	case rpcTypeResponse:
 		logResponse(evt)
 	default:
 		logSimpleRPCEvent(evt)
@@ -361,15 +378,15 @@ func logRPCEvent(evt rpcEvent) {
 // logSimpleRPCEvent handles events that map directly to a single log line.
 func logSimpleRPCEvent(evt rpcEvent) {
 	switch evt.Type {
-	case "agent_start":
+	case rpcTypeAgentStart:
 		slog.Info("pi: agent started")
-	case "agent_end":
+	case rpcTypeAgentEnd:
 		slog.Info("pi: agent finished")
 	case "auto_compaction_start":
 		slog.Info("pi: auto-compaction started")
 	case "auto_compaction_end":
 		slog.Info("pi: auto-compaction finished")
-	case "turn_start", "turn_end", "message_start", "message_end", "extension_ui_request":
+	case "turn_start", "turn_end", "message_start", "message_end", rpcTypeExtensionUIRequest:
 		slog.Debug("pi: " + evt.Type)
 	default:
 		slog.Debug("pi: event", "type", evt.Type)
@@ -490,10 +507,10 @@ func (p *PiProcess) drainEvents(ctx context.Context, handleFn func(rpcEvent) (bo
 // extension UI auto-cancel and tool call notifications.
 func (p *PiProcess) handleSideEffects(evt rpcEvent) error {
 	switch evt.Type {
-	case "extension_ui_request":
+	case rpcTypeExtensionUIRequest:
 		p.autoRespondExtensionUI(evt)
 
-	case "tool_execution_start":
+	case rpcTypeToolExecutionStart:
 		if p.onToolCall != nil {
 			p.onToolCall(ToolCallEvent{
 				ToolName: evt.ToolName,
@@ -501,7 +518,7 @@ func (p *PiProcess) handleSideEffects(evt rpcEvent) error {
 			})
 		}
 
-	case "response":
+	case rpcTypeResponse:
 		if evt.Success != nil && !*evt.Success {
 			return fmt.Errorf("pi rejected command %q: %s", evt.Command, evt.Error)
 		}
@@ -514,7 +531,7 @@ func (p *PiProcess) waitForResult(ctx context.Context) (string, error) {
 	var reply string
 
 	err := p.drainEvents(ctx, func(evt rpcEvent) (bool, error) {
-		if evt.Type != "agent_end" {
+		if evt.Type != rpcTypeAgentEnd {
 			return false, nil
 		}
 
@@ -540,7 +557,7 @@ func (p *PiProcess) waitForCompactResponse(ctx context.Context) (*CompactResult,
 	var result *CompactResult
 
 	err := p.drainEvents(ctx, func(evt rpcEvent) (bool, error) {
-		if evt.Type != "response" || evt.Command != "compact" {
+		if evt.Type != rpcTypeResponse || evt.Command != "compact" {
 			return false, nil
 		}
 
