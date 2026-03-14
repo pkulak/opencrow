@@ -104,7 +104,7 @@ func (p *PiProcess) Kill() {
 	case <-p.done:
 		return
 	case <-time.After(5 * time.Second):
-		slog.Warn("pi process did not exit after SIGINT, sending SIGKILL")
+		slog.Warn("pi: process did not exit after SIGINT, sending SIGKILL")
 
 		_ = p.cmd.Process.Kill()
 		<-p.done
@@ -141,6 +141,19 @@ type rpcEvent struct {
 	// tool_execution_start fields — camelCase is dictated by the pi protocol.
 	ToolName string         `json:"toolName,omitempty"` //nolint:tagliatelle // pi protocol uses camelCase
 	Args     map[string]any `json:"args,omitempty"`
+
+	// auto_retry_start fields — camelCase is dictated by the pi protocol.
+	Attempt      int    `json:"attempt,omitempty"`
+	MaxAttempts  int    `json:"maxAttempts,omitempty"`  //nolint:tagliatelle // pi protocol uses camelCase
+	DelayMs      int    `json:"delayMs,omitempty"`      //nolint:tagliatelle // pi protocol uses camelCase
+	ErrorMessage string `json:"errorMessage,omitempty"` //nolint:tagliatelle // pi protocol uses camelCase
+
+	// auto_compaction_start fields
+	Reason string `json:"reason,omitempty"`
+
+	// extension_error fields
+	ExtensionPath string `json:"extensionPath,omitempty"` //nolint:tagliatelle // pi protocol uses camelCase
+	Event         string `json:"event,omitempty"`
 }
 
 // CompactResult holds the data returned by a successful compact command.
@@ -186,13 +199,13 @@ func startPiProcess(cmd *exec.Cmd, sessionDir string) (*PiProcess, error) {
 		return nil, fmt.Errorf("starting pi: %w", err)
 	}
 
-	slog.Info("pi process started", "pid", cmd.Process.Pid, "session_dir", sessionDir)
+	slog.Info("pi: process started", "pid", cmd.Process.Pid, "session_dir", sessionDir)
 
 	// Log stderr in background
 	go func() {
 		scanner := bufio.NewScanner(stderrPipe)
 		for scanner.Scan() {
-			slog.Debug("pi stderr", "line", scanner.Text())
+			slog.Debug("pi: stderr", "line", scanner.Text())
 		}
 	}()
 
@@ -206,7 +219,7 @@ func startPiProcess(cmd *exec.Cmd, sessionDir string) (*PiProcess, error) {
 
 		close(done)
 
-		slog.Info("pi process exited")
+		slog.Info("pi: process exited")
 	}()
 
 	// Start a single persistent reader goroutine that owns the
@@ -310,7 +323,7 @@ func readEvents(scanner *bufio.Scanner, ch chan<- rpcParsed) {
 			continue
 		}
 
-		slog.Debug("pi rpc event", "type", evt.Type)
+		logRPCEvent(evt)
 
 		ch <- rpcParsed{event: evt}
 	}
@@ -318,6 +331,137 @@ func readEvents(scanner *bufio.Scanner, ch chan<- rpcParsed) {
 	if err := scanner.Err(); err != nil {
 		ch <- rpcParsed{err: fmt.Errorf("reading pi stdout: %w", err)}
 	}
+}
+
+const toolArgMaxLen = 512
+
+// RPC event type constants for events referenced in code.
+// The pi protocol may add new event types at any time;
+// unknown types are handled by default branches.
+const (
+	rpcTypeResponse            = "response"
+	rpcTypeAgentStart          = "agent_start"
+	rpcTypeAgentEnd            = "agent_end"
+	rpcTypeMessageUpdate       = "message_update"
+	rpcTypeToolExecutionStart  = "tool_execution_start"
+	rpcTypeToolExecutionEnd    = "tool_execution_end"
+	rpcTypeToolExecutionUpdate = "tool_execution_update"
+	rpcTypeAutoRetryStart      = "auto_retry_start"
+	rpcTypeAutoRetryEnd        = "auto_retry_end"
+	rpcTypeExtensionError      = "extension_error"
+	rpcTypeExtensionUIRequest  = "extension_ui_request"
+)
+
+// logRPCEvent logs a pi RPC event with context-appropriate level and fields.
+// Noisy streaming events (message_update, tool_execution_update) are suppressed.
+func logRPCEvent(evt rpcEvent) {
+	switch evt.Type {
+	case rpcTypeMessageUpdate, rpcTypeToolExecutionUpdate:
+		// Suppressed — streaming deltas are too noisy.
+	case rpcTypeToolExecutionStart:
+		slog.Info("pi: tool started", logToolArgs(evt)...)
+	case rpcTypeToolExecutionEnd:
+		slog.Info("pi: tool finished", "tool", evt.ToolName)
+	case rpcTypeAutoRetryStart:
+		logAutoRetryStart(evt)
+	case rpcTypeAutoRetryEnd:
+		logAutoRetryEnd(evt)
+	case rpcTypeExtensionError:
+		logExtensionError(evt)
+	case rpcTypeResponse:
+		logResponse(evt)
+	default:
+		logSimpleRPCEvent(evt)
+	}
+}
+
+// logSimpleRPCEvent handles events that map directly to a single log line.
+func logSimpleRPCEvent(evt rpcEvent) {
+	switch evt.Type {
+	case rpcTypeAgentStart:
+		slog.Info("pi: agent started")
+	case rpcTypeAgentEnd:
+		slog.Info("pi: agent finished")
+	case "auto_compaction_start":
+		attrs := []any{}
+		if evt.Reason != "" {
+			attrs = append(attrs, "reason", evt.Reason)
+		}
+
+		slog.Info("pi: auto-compaction started", attrs...)
+	case "auto_compaction_end":
+		slog.Info("pi: auto-compaction finished")
+	case "turn_start", "turn_end", "message_start", "message_end", rpcTypeExtensionUIRequest:
+		slog.Debug("pi: " + evt.Type)
+	default:
+		slog.Debug("pi: event", "type", evt.Type)
+	}
+}
+
+func logAutoRetryStart(evt rpcEvent) {
+	slog.Warn("pi: auto-retry",
+		"attempt", evt.Attempt,
+		"max", evt.MaxAttempts,
+		"delay_ms", evt.DelayMs,
+		"error", evt.ErrorMessage,
+	)
+}
+
+func logAutoRetryEnd(evt rpcEvent) {
+	if evt.Success != nil && *evt.Success {
+		slog.Info("pi: retry succeeded", "attempt", evt.Attempt)
+	} else {
+		slog.Warn("pi: retry failed", "attempt", evt.Attempt)
+	}
+}
+
+func logExtensionError(evt rpcEvent) {
+	slog.Error("pi: extension error",
+		"extension", evt.ExtensionPath,
+		"event", evt.Event,
+		"error", evt.Error,
+	)
+}
+
+func logResponse(evt rpcEvent) {
+	if evt.Success != nil && *evt.Success {
+		slog.Debug("pi: response", "command", evt.Command, "success", true)
+	} else {
+		slog.Debug("pi: response", "command", evt.Command, "success", false, "error", evt.Error)
+	}
+}
+
+// logToolArgs returns slog key-value pairs for a tool_execution_start event,
+// including the tool name and a summary of the most relevant argument.
+func logToolArgs(evt rpcEvent) []any {
+	attrs := []any{"tool", evt.ToolName}
+
+	var key string
+
+	switch evt.ToolName {
+	case "bash", "Bash":
+		key = "command"
+	case "Read", "read", "Edit", "edit", "Write", "write":
+		key = "path"
+	default:
+		return attrs
+	}
+
+	val, ok := evt.Args[key]
+	if !ok {
+		return attrs
+	}
+
+	s, ok := val.(string)
+	if !ok {
+		return attrs
+	}
+
+	if len(s) > toolArgMaxLen {
+		s = s[:toolArgMaxLen] + "…"
+	}
+
+	return append(attrs, key, s)
 }
 
 // drainEvents runs the caller-side event loop: it reads parsed events
@@ -368,10 +512,10 @@ func (p *PiProcess) drainEvents(ctx context.Context, handleFn func(rpcEvent) (bo
 // extension UI auto-cancel and tool call notifications.
 func (p *PiProcess) handleSideEffects(evt rpcEvent) error {
 	switch evt.Type {
-	case "extension_ui_request":
+	case rpcTypeExtensionUIRequest:
 		p.autoRespondExtensionUI(evt)
 
-	case "tool_execution_start":
+	case rpcTypeToolExecutionStart:
 		if p.onToolCall != nil {
 			p.onToolCall(ToolCallEvent{
 				ToolName: evt.ToolName,
@@ -379,7 +523,7 @@ func (p *PiProcess) handleSideEffects(evt rpcEvent) error {
 			})
 		}
 
-	case "response":
+	case rpcTypeResponse:
 		if evt.Success != nil && !*evt.Success {
 			return fmt.Errorf("pi rejected command %q: %s", evt.Command, evt.Error)
 		}
@@ -392,7 +536,7 @@ func (p *PiProcess) waitForResult(ctx context.Context) (string, error) {
 	var reply string
 
 	err := p.drainEvents(ctx, func(evt rpcEvent) (bool, error) {
-		if evt.Type != "agent_end" {
+		if evt.Type != rpcTypeAgentEnd {
 			return false, nil
 		}
 
@@ -418,7 +562,7 @@ func (p *PiProcess) waitForCompactResponse(ctx context.Context) (*CompactResult,
 	var result *CompactResult
 
 	err := p.drainEvents(ctx, func(evt rpcEvent) (bool, error) {
-		if evt.Type != "response" || evt.Command != "compact" {
+		if evt.Type != rpcTypeResponse || evt.Command != "compact" {
 			return false, nil
 		}
 
