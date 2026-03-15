@@ -22,3 +22,10 @@ INSERT INTO publish_queue (event_json, relays, created_at) VALUES (?, ?, ?);
 
 -- name: DeletePublishItem :exec
 DELETE FROM publish_queue WHERE id = ?;
+
+-- name: GetPublishedMetadata :one
+SELECT hash, published_at FROM published_metadata WHERE kind = ?;
+
+-- name: UpsertPublishedMetadata :exec
+INSERT INTO published_metadata (kind, hash, published_at) VALUES (?, ?, ?)
+ON CONFLICT(kind) DO UPDATE SET hash = excluded.hash, published_at = excluded.published_at;

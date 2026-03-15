@@ -11,6 +11,12 @@ type PublishQueue struct {
 	CreatedAt int64
 }
 
+type PublishedMetadata struct {
+	Kind        int64
+	Hash        string
+	PublishedAt int64
+}
+
 type SeenRumors struct {
 	ID   string
 	Seen int64
