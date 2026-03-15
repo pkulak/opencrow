@@ -29,6 +29,22 @@ func (q *Queries) DeletePublishItem(ctx context.Context, id int64) error {
 	return err
 }
 
+const getPublishedMetadata = `-- name: GetPublishedMetadata :one
+SELECT hash, published_at FROM published_metadata WHERE kind = ?
+`
+
+type GetPublishedMetadataRow struct {
+	Hash        string
+	PublishedAt int64
+}
+
+func (q *Queries) GetPublishedMetadata(ctx context.Context, kind int64) (GetPublishedMetadataRow, error) {
+	row := q.db.QueryRowContext(ctx, getPublishedMetadata, kind)
+	var i GetPublishedMetadataRow
+	err := row.Scan(&i.Hash, &i.PublishedAt)
+	return i, err
+}
+
 const insertPublishItem = `-- name: InsertPublishItem :execlastid
 INSERT INTO publish_queue (event_json, relays, created_at) VALUES (?, ?, ?)
 `
@@ -113,6 +129,22 @@ DELETE FROM seen_rumors WHERE seen < ?
 
 func (q *Queries) PruneSeenRumors(ctx context.Context, seen int64) error {
 	_, err := q.db.ExecContext(ctx, pruneSeenRumors, seen)
+	return err
+}
+
+const upsertPublishedMetadata = `-- name: UpsertPublishedMetadata :exec
+INSERT INTO published_metadata (kind, hash, published_at) VALUES (?, ?, ?)
+ON CONFLICT(kind) DO UPDATE SET hash = excluded.hash, published_at = excluded.published_at
+`
+
+type UpsertPublishedMetadataParams struct {
+	Kind        int64
+	Hash        string
+	PublishedAt int64
+}
+
+func (q *Queries) UpsertPublishedMetadata(ctx context.Context, arg UpsertPublishedMetadataParams) error {
+	_, err := q.db.ExecContext(ctx, upsertPublishedMetadata, arg.Kind, arg.Hash, arg.PublishedAt)
 	return err
 }
 

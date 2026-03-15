@@ -3,7 +3,11 @@ package nostr
 
 import (
 	"context"
+	"crypto/sha256"
+	"database/sql"
+	"encoding/hex"
 	"encoding/json"
+	"errors"
 	"fmt"
 	"log/slog"
 	"strings"
@@ -15,6 +19,11 @@ import (
 	"fiatjaf.com/nostr/nip59"
 	"github.com/pinpox/opencrow/backend"
 )
+
+// metadataRefreshInterval controls how often profile and DM relay list
+// events are re-published even when the content hasn't changed. Relays
+// may drop data, so periodic refreshes ensure discoverability.
+const metadataRefreshInterval = 24 * time.Hour
 
 // ProfileConfig holds NIP-01 kind 0 metadata fields.
 type ProfileConfig struct {
@@ -360,7 +369,9 @@ func (b *Backend) discoverUserDMRelays(ctx context.Context, seen map[string]stru
 }
 
 // publishProfile publishes a NIP-01 kind 0 metadata event so the bot
-// has a visible name, about, and picture on Nostr clients.
+// has a visible name, about, and picture on Nostr clients. Skips
+// publishing when the profile content hasn't changed and was published
+// recently (within metadataRefreshInterval).
 func (b *Backend) publishProfile(ctx context.Context) {
 	p := b.cfg.Profile
 	if p.Name == "" && p.DisplayName == "" && p.About == "" && p.Picture == "" {
@@ -372,6 +383,14 @@ func (b *Backend) publishProfile(ctx context.Context) {
 	content, err := json.Marshal(meta)
 	if err != nil {
 		slog.Error("nostr: failed to marshal profile metadata", "error", err)
+
+		return
+	}
+
+	hash := hashContent(string(content), b.cfg.Relays)
+
+	if b.metadataIsFresh(ctx, 0, hash) {
+		slog.Debug("nostr: skipping profile publish (unchanged, still fresh)")
 
 		return
 	}
@@ -389,6 +408,7 @@ func (b *Backend) publishProfile(ctx context.Context) {
 	}
 
 	b.publishToRelays(ctx, evt, b.cfg.Relays, "profile")
+	b.markMetadataPublished(ctx, 0, hash)
 }
 
 // buildProfileMeta constructs the metadata map from non-empty profile fields.
@@ -416,11 +436,20 @@ func buildProfileMeta(p ProfileConfig) map[string]string {
 // publishDMRelayList publishes a NIP-17 DM relay list (kind 10050) so
 // clients can discover where to send gift-wrapped DMs to this bot.
 // Uses DMRelays (not Relays) because some general-purpose relays silently
-// drop kind 1059 gift wraps.
+// drop kind 1059 gift wraps. Skips publishing when the relay list hasn't
+// changed and was published recently (within metadataRefreshInterval).
 func (b *Backend) publishDMRelayList(ctx context.Context) {
 	tags := make(gonostr.Tags, 0, len(b.cfg.DMRelays))
 	for _, relay := range b.cfg.DMRelays {
 		tags = append(tags, gonostr.Tag{"relay", relay})
+	}
+
+	hash := hashContent(strings.Join(b.cfg.DMRelays, "\n"), b.cfg.Relays)
+
+	if b.metadataIsFresh(ctx, int64(gonostr.KindDMRelayList), hash) {
+		slog.Debug("nostr: skipping DM relay list publish (unchanged, still fresh)")
+
+		return
 	}
 
 	evt := gonostr.Event{
@@ -436,6 +465,7 @@ func (b *Backend) publishDMRelayList(ctx context.Context) {
 	}
 
 	b.publishToRelays(ctx, evt, b.cfg.Relays, "DM relay list")
+	b.markMetadataPublished(ctx, int64(gonostr.KindDMRelayList), hash)
 }
 
 // pruneSeenLoop periodically removes stale entries from the seen_rumors table.
@@ -577,4 +607,54 @@ func rumorReplyTarget(rumor gonostr.Event) string {
 	}
 
 	return ""
+}
+
+// hashContent returns a hex-encoded SHA-256 of the event content and
+// the target relay list, so a change in either triggers re-publishing.
+func hashContent(content string, relays []string) string {
+	h := sha256.New()
+	h.Write([]byte(content))
+	h.Write([]byte{0})
+
+	for _, r := range relays {
+		h.Write([]byte(r))
+		h.Write([]byte{0})
+	}
+
+	return hex.EncodeToString(h.Sum(nil))
+}
+
+// metadataIsFresh returns true if the given kind was already published
+// with the same hash within metadataRefreshInterval.
+func (b *Backend) metadataIsFresh(ctx context.Context, kind int64, hash string) bool {
+	row, err := b.db.queries.GetPublishedMetadata(ctx, kind)
+	if err != nil {
+		if errors.Is(err, sql.ErrNoRows) {
+			return false // never published
+		}
+
+		slog.Warn("nostr: failed to check published metadata cache", "kind", kind, "error", err)
+
+		return false // publish to be safe
+	}
+
+	if row.Hash != hash {
+		return false // content or target relays changed
+	}
+
+	publishedAt := time.Unix(row.PublishedAt, 0)
+
+	return time.Since(publishedAt) < metadataRefreshInterval
+}
+
+// markMetadataPublished records that a metadata event was published with
+// the given content hash.
+func (b *Backend) markMetadataPublished(ctx context.Context, kind int64, hash string) {
+	if err := b.db.queries.UpsertPublishedMetadata(ctx, UpsertPublishedMetadataParams{
+		Kind:        kind,
+		Hash:        hash,
+		PublishedAt: time.Now().Unix(),
+	}); err != nil {
+		slog.Warn("nostr: failed to cache published metadata", "kind", kind, "error", err)
+	}
 }

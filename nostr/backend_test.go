@@ -903,6 +903,97 @@ func sendTestDM(ctx context.Context, t *testing.T, wsURL string, senderSK gonost
 	}
 }
 
+func TestMetadataCaching_SkipsRepublishOnRestart(t *testing.T) {
+	t.Parallel()
+
+	wsURL, cleanup := testutil.StartTestRelay(t)
+	defer cleanup()
+
+	botSK := gonostr.Generate()
+	sessionDir := t.TempDir()
+	cfg := Config{
+		PrivateKey:     botSK.Hex(),
+		Relays:         []string{wsURL},
+		DMRelays:       []string{wsURL},
+		SessionBaseDir: sessionDir,
+		Profile: ProfileConfig{
+			Name:  "TestBot",
+			About: "A test bot",
+		},
+	}
+
+	// First run: publishes profile + DM relay list.
+	runBackendOnce(t, cfg)
+
+	profilesBefore := countEventsOfKind(t, wsURL, 0, botSK.Public())
+	dmRelaysBefore := countEventsOfKind(t, wsURL, gonostr.KindDMRelayList, botSK.Public())
+
+	if profilesBefore == 0 {
+		t.Fatal("first run should have published a profile event")
+	}
+
+	if dmRelaysBefore == 0 {
+		t.Fatal("first run should have published a DM relay list event")
+	}
+
+	// Second run: same config, same sessionDir → should NOT re-publish.
+	runBackendOnce(t, cfg)
+
+	profilesAfter := countEventsOfKind(t, wsURL, 0, botSK.Public())
+	dmRelaysAfter := countEventsOfKind(t, wsURL, gonostr.KindDMRelayList, botSK.Public())
+
+	if profilesAfter != profilesBefore {
+		t.Errorf("second run published extra profile events: before=%d after=%d", profilesBefore, profilesAfter)
+	}
+
+	if dmRelaysAfter != dmRelaysBefore {
+		t.Errorf("second run published extra DM relay list events: before=%d after=%d", dmRelaysBefore, dmRelaysAfter)
+	}
+}
+
+// runBackendOnce starts a backend with the given config, lets it run briefly,
+// then shuts it down. Used by metadata caching tests to simulate restarts.
+func runBackendOnce(t *testing.T, cfg Config) {
+	t.Helper()
+
+	b, err := NewBackend(context.Background(), cfg, func(context.Context, backend.Message) {})
+	if err != nil {
+		t.Fatal(err)
+	}
+
+	ctx, cancel := context.WithTimeout(context.Background(), 5*time.Second)
+	defer cancel()
+
+	runErr := runBackendAsync(ctx, b)
+
+	time.Sleep(500 * time.Millisecond)
+	cancel()
+	<-runErr
+	b.Close()
+}
+
+// countEventsOfKind counts how many events of the given kind exist on the
+// relay from the specified author.
+func countEventsOfKind(t *testing.T, relayURL string, kind gonostr.Kind, author gonostr.PubKey) int {
+	t.Helper()
+
+	pool := gonostr.NewPool(gonostr.PoolOptions{})
+	defer pool.Close("count events")
+
+	ctx, cancel := context.WithTimeout(context.Background(), 2*time.Second)
+	defer cancel()
+
+	count := 0
+	for range pool.FetchMany(ctx, []string{relayURL}, gonostr.Filter{
+		Kinds:   []gonostr.Kind{kind},
+		Authors: []gonostr.PubKey{author},
+	}, gonostr.SubscriptionOptions{}) {
+		count++
+	}
+
+	return count
+}
+
 // aesGCMEncrypt encrypts plaintext with a deterministic test key and returns
 // the ciphertext plus hex-encoded key, nonce, and pre-encryption hash.
 func aesGCMEncrypt(t *testing.T, plaintext []byte) ([]byte, string, string, string) {
