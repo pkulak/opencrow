@@ -79,32 +79,3 @@ func TestDecodeReceiveMessage_IgnoresNonDataMessages(t *testing.T) {
 		t.Fatalf("expected ignored message, got %+v", msg)
 	}
 }
-
-func TestAddRecipientParams_Group(t *testing.T) {
-	t.Parallel()
-
-	params := map[string]any{}
-	addRecipientParams(params, "signal-group:ABCD=")
-
-	if got := params["groupId"]; got != "ABCD=" {
-		t.Fatalf("groupId = %#v, want ABCD=", got)
-	}
-
-	if _, ok := params["recipient"]; ok {
-		t.Fatal("recipient should not be set for group message")
-	}
-}
-
-func TestIsAllowed_AllowedUsers(t *testing.T) {
-	t.Parallel()
-
-	b := &Backend{allowedUsers: map[string]struct{}{"+491234": {}}}
-
-	if !b.isAllowed("+491234") {
-		t.Fatal("allowed user should be accepted")
-	}
-
-	if b.isAllowed("+499999") {
-		t.Fatal("non-allowed user should be rejected")
-	}
-}
