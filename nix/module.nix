@@ -41,6 +41,17 @@ let
         PI_CODING_AGENT_DIR=${cfg.environment.PI_CODING_AGENT_DIR} \
       ${lib.getExe cfg.piPackage} "$@"
   '';
+
+  # Host-side wrapper to run signal-cli inside the container as the opencrow user.
+  # Needed for account setup: register, verify, link, etc.
+  opencrowSignalCli = pkgs.writeShellScriptBin "opencrow-signal-cli" ''
+    exec machinectl shell opencrow@opencrow \
+      /run/current-system/sw/bin/env \
+        HOME=/var/lib/opencrow \
+      ${lib.getExe cfg.signalCliPackage} \
+        --config ${cfg.environment.OPENCROW_SIGNAL_CONFIG_DIR} \
+        "$@"
+  '';
 in
 {
   options.services.opencrow = {
@@ -57,6 +68,13 @@ in
       type = lib.types.package;
       description = "The pi coding agent package. Required — typically from llm-agents.nix or similar.";
       example = lib.literalExpression "llm-agents.packages.\${system}.pi";
+    };
+
+    signalCliPackage = lib.mkOption {
+      type = lib.types.package;
+      default = pkgs.signal-cli;
+      defaultText = lib.literalExpression "pkgs.signal-cli";
+      description = "The signal-cli package to use when OPENCROW_BACKEND is signal.";
     };
 
     skills = lib.mkOption {
@@ -184,6 +202,7 @@ in
             type = lib.types.enum [
               "matrix"
               "nostr"
+              "signal"
             ];
             default = "matrix";
             description = "Messaging backend to use.";
@@ -200,6 +219,32 @@ in
             type = lib.types.str;
             default = "";
             description = "Matrix device ID.";
+          };
+
+          OPENCROW_SIGNAL_ACCOUNT = lib.mkOption {
+            type = lib.types.str;
+            default = "";
+            description = "Signal account identifier for signal-cli. Required when backend is signal.";
+            example = "+12025550123";
+          };
+
+          OPENCROW_SIGNAL_CLI_BINARY = lib.mkOption {
+            type = lib.types.str;
+            default = lib.getExe cfg.signalCliPackage;
+            defaultText = lib.literalExpression "lib.getExe config.services.opencrow.signalCliPackage";
+            description = "Path to the signal-cli binary.";
+          };
+
+          OPENCROW_SIGNAL_CONFIG_DIR = lib.mkOption {
+            type = lib.types.str;
+            default = "/var/lib/opencrow/signal-cli";
+            description = "Directory where signal-cli stores account data and downloaded attachments.";
+          };
+
+          OPENCROW_SIGNAL_SOCKET_PATH = lib.mkOption {
+            type = lib.types.str;
+            default = "/var/lib/opencrow/signal-cli/opencrow-jsonrpc.sock";
+            description = "Unix socket path used by signal-cli daemon JSON-RPC.";
           };
 
           OPENCROW_NOSTR_RELAYS = lib.mkOption {
@@ -361,6 +406,11 @@ in
       }
       {
         assertion =
+          cfg.environment.OPENCROW_BACKEND != "signal" || cfg.environment.OPENCROW_SIGNAL_ACCOUNT != "";
+        message = "OPENCROW_SIGNAL_ACCOUNT is required when OPENCROW_BACKEND is signal.";
+      }
+      {
+        assertion =
           cfg.environment.OPENCROW_BACKEND != "nostr" || cfg.environment.OPENCROW_NOSTR_RELAYS != "";
         message = "OPENCROW_NOSTR_RELAYS is required when OPENCROW_BACKEND is nostr.";
       }
@@ -380,8 +430,10 @@ in
       lib.mkDefault "/var/lib/opencrow/sediment"
     );
 
-    # Host-side wrapper for interactive pi usage inside the container.
-    environment.systemPackages = [ opencrowPi ];
+    # Host-side wrappers for interactive usage inside the container.
+    environment.systemPackages =
+      [ opencrowPi ]
+      ++ lib.optional (cfg.environment.OPENCROW_BACKEND == "signal") opencrowSignalCli;
 
     # Host-side directory needed for the bind mount into the container.
     systemd.tmpfiles.rules = [
@@ -457,6 +509,7 @@ in
               pkgs.bash
               pkgs.coreutils
             ]
+            ++ lib.optional (cfg.environment.OPENCROW_BACKEND == "signal") cfg.signalCliPackage
             ++ cfg.extraPackages;
 
             environment = {
@@ -484,6 +537,7 @@ in
             opencrowPkg
             cfg.piPackage
           ]
+          ++ lib.optional (cfg.environment.OPENCROW_BACKEND == "signal") cfg.signalCliPackage
           ++ cfg.extraPackages;
         };
     };

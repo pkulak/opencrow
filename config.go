@@ -14,12 +14,14 @@ import (
 const (
 	backendMatrix = "matrix"
 	backendNostr  = "nostr"
+	backendSignal = "signal"
 )
 
 type Config struct {
-	BackendType string // backendMatrix or backendNostr
+	BackendType string // backendMatrix, backendNostr, or backendSignal
 	Matrix      MatrixConfig
 	Nostr       NostrConfig
+	Signal      SignalConfig
 	Pi          PiConfig
 	Heartbeat   HeartbeatConfig
 }
@@ -37,6 +39,14 @@ type MatrixConfig struct {
 	AllowedUsers map[string]struct{}
 	PickleKey    string
 	CryptoDBPath string
+}
+
+type SignalConfig struct {
+	Account      string
+	BinaryPath   string
+	ConfigDir    string
+	SocketPath   string
+	AllowedUsers map[string]struct{}
 }
 
 type NostrConfig struct {
@@ -76,10 +86,10 @@ func loadConfig(getenv func(string) string) (*Config, error) {
 	backendType := env.or("OPENCROW_BACKEND", backendMatrix)
 
 	switch backendType {
-	case backendMatrix, backendNostr:
+	case backendMatrix, backendNostr, backendSignal:
 		// valid
 	default:
-		return nil, fmt.Errorf("OPENCROW_BACKEND=%q is not supported (valid: matrix, nostr)", backendType)
+		return nil, fmt.Errorf("OPENCROW_BACKEND=%q is not supported (valid: matrix, nostr, signal)", backendType)
 	}
 
 	idleTimeout, err := parseDuration(getenv("OPENCROW_PI_IDLE_TIMEOUT"), 30*time.Minute, "OPENCROW_PI_IDLE_TIMEOUT")
@@ -107,6 +117,7 @@ func loadConfig(getenv func(string) string) (*Config, error) {
 			PickleKey:    env.or("OPENCROW_MATRIX_PICKLE_KEY", "opencrow-default-pickle-key"),
 			CryptoDBPath: env.or("OPENCROW_MATRIX_CRYPTO_DB", filepath.Join(workingDir, "crypto.db")),
 		},
+		Signal: loadSignalConfig(env, getenv, workingDir, allowedUsers),
 		Pi: PiConfig{
 			BinaryPath:    env.or("OPENCROW_PI_BINARY", "pi"),
 			SessionDir:    env.or("OPENCROW_PI_SESSION_DIR", "/var/lib/opencrow/sessions"),
@@ -142,6 +153,8 @@ func (cfg *Config) validateBackend(getenv func(string) string) error {
 		}
 
 		cfg.Nostr = nostrCfg
+	case backendSignal:
+		return cfg.Signal.validate()
 	}
 
 	return nil
@@ -158,6 +171,32 @@ func (m MatrixConfig) validate() error {
 
 	if m.AccessToken == "" {
 		return errors.New("OPENCROW_MATRIX_ACCESS_TOKEN is required")
+	}
+
+	return nil
+}
+
+func loadSignalConfig(env envReader, getenv func(string) string, workingDir string, allowedUsers map[string]struct{}) SignalConfig {
+	return SignalConfig{
+		Account:      getenv("OPENCROW_SIGNAL_ACCOUNT"),
+		BinaryPath:   env.or("OPENCROW_SIGNAL_CLI_BINARY", "signal-cli"),
+		ConfigDir:    env.or("OPENCROW_SIGNAL_CONFIG_DIR", filepath.Join(workingDir, "signal-cli")),
+		SocketPath:   env.or("OPENCROW_SIGNAL_SOCKET_PATH", filepath.Join(workingDir, "signal-cli", "opencrow-jsonrpc.sock")),
+		AllowedUsers: allowedUsers,
+	}
+}
+
+func (s SignalConfig) validate() error {
+	if s.Account == "" {
+		return errors.New("OPENCROW_SIGNAL_ACCOUNT is required")
+	}
+
+	if s.BinaryPath == "" {
+		return errors.New("OPENCROW_SIGNAL_CLI_BINARY must not be empty")
+	}
+
+	if s.SocketPath == "" {
+		return errors.New("OPENCROW_SIGNAL_SOCKET_PATH must not be empty")
 	}
 
 	return nil
