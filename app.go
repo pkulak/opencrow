@@ -194,7 +194,7 @@ func formatToolCall(evt ToolCallEvent) string {
 	switch evt.ToolName {
 	case "bash":
 		if cmd, ok := evt.Args["command"].(string); ok {
-			return fmt.Sprintf("🔧 `%s`", cmd)
+			return fmt.Sprintf("🔧\n```sh\n%s\n```", cmd)
 		}
 
 		return "🔧 bash"
