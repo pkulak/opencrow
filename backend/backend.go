@@ -31,7 +31,26 @@ type Backend interface {
 	// SystemPromptExtra returns backend-specific text to append to the
 	// system prompt.
 	SystemPromptExtra() string
+	// MarkdownFlavor reports how the backend renders Markdown formatting.
+	// Callers use this to decide between fenced code blocks, plain fences
+	// without a language hint, or raw text.
+	MarkdownFlavor() MarkdownFlavor
 }
+
+// MarkdownFlavor describes the level of Markdown support a backend's clients
+// typically render.
+type MarkdownFlavor int
+
+const (
+	// MarkdownNone: no Markdown rendering; send plain text.
+	MarkdownNone MarkdownFlavor = iota
+	// MarkdownBasic: fenced code blocks and inline backticks render, but
+	// language hints on fences may leak (e.g. Nostr/0xchat).
+	MarkdownBasic
+	// MarkdownFull: full Markdown including language-tagged fences for
+	// syntax highlighting (e.g. Matrix/Element).
+	MarkdownFull
+)
 
 // Message represents a transport-agnostic inbound message.
 type Message struct {

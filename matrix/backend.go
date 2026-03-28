@@ -287,6 +287,13 @@ session directory. You'll see them as "[User sent a file (<caption>): <path>]". 
 read tool to view them.`
 }
 
+// MarkdownFlavor returns MarkdownFull: Matrix clients render Markdown via the
+// org.matrix.custom.html formatted body that SendMessage emits, including
+// language-tagged fenced code blocks for syntax highlighting.
+func (b *Backend) MarkdownFlavor() backend.MarkdownFlavor {
+	return backend.MarkdownFull
+}
+
 // --- internal handlers ---
 
 func (b *Backend) setupCrypto(ctx context.Context) error {

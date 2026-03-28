@@ -190,29 +190,49 @@ func (a *App) sendReplyWithFiles(ctx context.Context, conversationID, reply, rep
 }
 
 // formatToolCall produces a short human-readable summary of a tool invocation.
-func formatToolCall(evt ToolCallEvent) string {
+// The Markdown flavor controls whether commands and paths are wrapped in
+// fenced code blocks / inline backticks (and whether fences carry a language
+// hint) so backends that do not render Markdown do not leak raw syntax.
+func formatToolCall(evt ToolCallEvent, flavor backend.MarkdownFlavor) string {
+	code := func(s string) string {
+		if flavor == backend.MarkdownNone {
+			return s
+		}
+
+		return "`" + s + "`"
+	}
+
 	switch evt.ToolName {
 	case "bash":
 		if cmd, ok := evt.Args["command"].(string); ok {
-			return fmt.Sprintf("🔧\n```sh\n%s\n```", cmd)
+			switch flavor {
+			case backend.MarkdownFull:
+				return fmt.Sprintf("🔧\n```sh\n%s\n```", cmd)
+			case backend.MarkdownBasic:
+				// No language hint: some clients (e.g. Nostr/0xchat)
+				// render the hint literally instead of hiding it.
+				return fmt.Sprintf("🔧\n```\n%s\n```", cmd)
+			default:
+				return "🔧 " + cmd
+			}
 		}
 
 		return "🔧 bash"
 	case "read":
 		if p, ok := evt.Args["path"].(string); ok {
-			return fmt.Sprintf("📄 reading `%s`", p)
+			return "📄 reading " + code(p)
 		}
 
 		return "📄 reading file"
 	case "edit":
 		if p, ok := evt.Args["path"].(string); ok {
-			return fmt.Sprintf("✏️ editing `%s`", p)
+			return "✏️ editing " + code(p)
 		}
 
 		return "✏️ editing file"
 	case "write":
 		if p, ok := evt.Args["path"].(string); ok {
-			return fmt.Sprintf("📝 writing `%s`", p)
+			return "📝 writing " + code(p)
 		}
 
 		return "📝 writing file"

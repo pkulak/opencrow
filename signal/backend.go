@@ -281,6 +281,12 @@ When users send files in Signal, you'll receive a message like:
 Use the read tool to inspect the file.`
 }
 
+// MarkdownFlavor returns MarkdownNone: Signal does not interpret Markdown
+// syntax and would display backticks and fences literally.
+func (b *Backend) MarkdownFlavor() backend.MarkdownFlavor {
+	return backend.MarkdownNone
+}
+
 func (b *Backend) sendMessage(ctx context.Context, conversationID, text, replyToID string) (string, error) {
 	params := map[string]any{
 		"message": text,

@@ -290,6 +290,14 @@ You can include multiple <sendfile> tags in a single response.`
 	return extra
 }
 
+// MarkdownFlavor returns MarkdownBasic: popular Nostr clients (Damus,
+// Amethyst, 0xchat) render fenced code blocks and inline backticks, but some
+// (0xchat) display the language hint after the opening fence literally, so
+// callers should emit plain ``` fences.
+func (b *Backend) MarkdownFlavor() backend.MarkdownFlavor {
+	return backend.MarkdownBasic
+}
+
 // --- unexported methods ---
 
 // drainAndShutdown waits for in-flight reaction goroutines, then stops the
