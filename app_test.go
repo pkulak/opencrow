@@ -19,6 +19,7 @@ type mockBackend struct {
 	typingCalls           []typingCall
 	resetCalls            []string
 	systemPromptExtraText string
+	markdownFlavor        backend.MarkdownFlavor
 }
 
 type sentMessage struct {
@@ -74,6 +75,10 @@ func (m *mockBackend) ResetConversation(_ context.Context, conversationID string
 
 func (m *mockBackend) SystemPromptExtra() string {
 	return m.systemPromptExtraText
+}
+
+func (m *mockBackend) MarkdownFlavor() backend.MarkdownFlavor {
+	return m.markdownFlavor
 }
 
 // newTestApp creates a mockBackend + App wired together for testing.
@@ -297,4 +302,24 @@ func TestApp_SystemPrompt_NoExtra(t *testing.T) {
 	if got != "Base prompt" {
 		t.Errorf("systemPrompt = %q, want %q", got, "Base prompt")
 	}
+}
+
+func TestFormatToolCall(t *testing.T) {
+	t.Parallel()
+
+	bash := ToolCallEvent{ToolName: "bash", Args: map[string]any{"command": "ls -la"}}
+	read := ToolCallEvent{ToolName: "read", Args: map[string]any{"path": "/etc/hosts"}}
+
+	check := func(evt ToolCallEvent, flavor backend.MarkdownFlavor, want string) {
+		t.Helper()
+		if got := formatToolCall(evt, flavor); got != want {
+			t.Errorf("formatToolCall(%s, %d) = %q, want %q", evt.ToolName, flavor, got, want)
+		}
+	}
+
+	check(bash, backend.MarkdownFull, "🔧\n```sh\nls -la\n```")
+	check(bash, backend.MarkdownBasic, "🔧\n```\nls -la\n```")
+	check(bash, backend.MarkdownNone, "🔧 ls -la")
+	check(read, backend.MarkdownBasic, "📄 reading `/etc/hosts`")
+	check(read, backend.MarkdownNone, "📄 reading /etc/hosts")
 }

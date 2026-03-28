@@ -12,6 +12,8 @@ import (
 	"sync"
 	"sync/atomic"
 	"time"
+
+	"github.com/pinpox/opencrow/backend"
 )
 
 // Source names for inbox items.
@@ -59,6 +61,7 @@ type compactOutcome struct {
 type Backend interface {
 	SetTyping(ctx context.Context, conversationID string, typing bool)
 	SendMessage(ctx context.Context, conversationID string, text string, replyToID string) string
+	MarkdownFlavor() backend.MarkdownFlavor
 }
 
 // NewWorker creates a new worker. The pi process is started lazily on first dequeue.
@@ -513,8 +516,9 @@ func (w *Worker) ensurePi(ctx context.Context) (*PiProcess, error) {
 	}
 
 	if w.piCfg.ShowToolCalls {
+		flavor := w.be.MarkdownFlavor()
 		pi.onToolCall = func(evt ToolCallEvent) { //nolint:contextcheck // fire-and-forget notification, no parent ctx
-			w.be.SendMessage(context.Background(), w.resolveRoomID(), formatToolCall(evt), "")
+			w.be.SendMessage(context.Background(), w.resolveRoomID(), formatToolCall(evt, flavor), "")
 		}
 	}
 
