@@ -280,9 +280,9 @@ Use this whenever you create a file the user should receive (charts, images, PDF
 
 ## File attachments from the user
 
-When users send files (images, documents, etc.) in the chat, they are downloaded to your
-session directory. You'll see them as "[User sent a file (<caption>): <path>]". Use the
-read tool to view them.`
+When users send files (images, documents, etc.) in the chat, they are downloaded locally
+and you'll see them as "[User sent a file (<caption>): <path>]". Use the read tool to
+view the file at the given path.`
 }
 
 // MarkdownFlavor returns MarkdownFull: Matrix clients render Markdown via the
