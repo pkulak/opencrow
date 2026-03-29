@@ -320,7 +320,7 @@ When using tools, prefer standard Unix tools. Check output before proceeding. Br
 // never reads it.
 const heartbeatSoul = `## Heartbeat
 
-HEARTBEAT.md in your session directory holds standing checks to run
+HEARTBEAT.md in your working directory holds standing checks to run
 periodically. One check per line:
 
   - Check for urgent email

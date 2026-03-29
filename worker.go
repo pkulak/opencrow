@@ -582,7 +582,7 @@ func (w *Worker) resolveRoomID() string {
 }
 
 func (w *Worker) readHeartbeatFile() string {
-	path := filepath.Join(w.piCfg.SessionDir, "HEARTBEAT.md")
+	path := filepath.Join(w.piCfg.WorkingDir, "HEARTBEAT.md")
 
 	data, err := os.ReadFile(path)
 	if err != nil && !errors.Is(err, os.ErrNotExist) {

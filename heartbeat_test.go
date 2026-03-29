@@ -2,6 +2,8 @@ package main
 
 import (
 	"context"
+	"os"
+	"path/filepath"
 	"reflect"
 	"strings"
 	"testing"
@@ -19,7 +21,17 @@ func TestParseHeartbeatItems(t *testing.T) {
 prose line
 - Review calendar
 `
-	got := parseHeartbeatItems(content)
+	// Write to WorkingDir and give the worker a distinct SessionDir to
+	// guard against a regression where HEARTBEAT.md was looked up in
+	// SessionDir (pi's jsonl storage) instead of the agent's cwd.
+	workDir := t.TempDir()
+	if err := os.WriteFile(filepath.Join(workDir, "HEARTBEAT.md"), []byte(content), 0o600); err != nil {
+		t.Fatal(err)
+	}
+
+	w := &Worker{piCfg: PiConfig{WorkingDir: workDir, SessionDir: t.TempDir()}}
+
+	got := parseHeartbeatItems(w.readHeartbeatFile())
 	want := []string{"Check email", "Indented item", "Review calendar"}
 
 	if !reflect.DeepEqual(got, want) {
