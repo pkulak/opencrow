@@ -63,10 +63,14 @@ type NostrConfig struct {
 }
 
 type PiConfig struct {
-	BinaryPath    string
-	SessionDir    string
-	Provider      string
-	Model         string
+	BinaryPath string
+	// SessionDir holds opencrow's internal state: pi session jsonl, opencrow.db,
+	// .room_id, trigger.pipe, downloaded attachments. Not the agent's cwd.
+	SessionDir string
+	Provider   string
+	Model      string
+	// WorkingDir is the agent's cwd — where it reads/writes user-facing files
+	// like HEARTBEAT.md. In system prompts, refer to this as "working directory".
 	WorkingDir    string
 	IdleTimeout   time.Duration
 	SystemPrompt  string

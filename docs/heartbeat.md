@@ -7,7 +7,7 @@ awareness and a **reminders** table for one-shot prompts. Both share a
 ## Heartbeat
 
 Set `OPENCROW_HEARTBEAT_INTERVAL` to a Go duration (e.g. `30m`, `1h`). On
-each tick the scheduler reads `<session-dir>/HEARTBEAT.md`, extracts active
+each tick the scheduler reads `<working-dir>/HEARTBEAT.md`, extracts active
 checklist items, and sends them to the agent:
 
 ```md
