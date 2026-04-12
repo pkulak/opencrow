@@ -5,20 +5,18 @@
   protobuf,
 }:
 
-rustPlatform.buildRustPackage {
+rustPlatform.buildRustPackage rec {
   pname = "sediment";
-  version = "0.5.0-unstable-2026-02-14";
+  version = "0.5.1";
 
-  # TODO: switch back to rendro/sediment once
-  # https://github.com/rendro/sediment/pull/60 is merged.
   src = fetchFromGitHub {
-    owner = "Mic92";
+    owner = "rendro";
     repo = "sediment";
-    rev = "392158db48334bee646a2fb2d10d63465f9d02c2";
-    hash = "sha256-29IuEF7RqjTlJwkf7hMB28fllUquadgQNwKq81icVlc=";
+    tag = "v${version}";
+    hash = "sha256-hINSwWJE9/Nq5QT2Y7vgFlrwz4fGVYhT4f98Eb7CS2c=";
   };
 
-  cargoHash = "sha256-6POb6FkDItoICpn/Q55XZr2LPOj3KBL2DrQMJCLcpJQ=";
+  cargoHash = "sha256-NfXChnMYyNyyT3ocdT65Ic6Iu3Zp0LtuTR/Je8FzqZc=";
 
   nativeBuildInputs = [ protobuf ];
 
