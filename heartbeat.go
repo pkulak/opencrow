@@ -155,12 +155,19 @@ func buildHeartbeatPrompt(basePrompt string, items []string) string {
 }
 
 // shouldSuppressReply returns true if the reply should not be forwarded
-// to the user. The HEARTBEAT_OK sentinel is honoured only for heartbeat
-// items — triggers are explicit external events and must always surface,
-// otherwise the model can silently swallow them by emitting the sentinel.
+// to the user. Each source type has its own sentinel to prevent the model
+// from cross-contaminating — a heartbeat can only be silenced by
+// HEARTBEAT_OK, while triggers and user messages can only be silenced by
+// NO_REPLY.
 func shouldSuppressReply(reply, source string) bool {
 	if source == sourceHeartbeat && strings.Contains(reply, "HEARTBEAT_OK") {
 		slog.Info(source + ": HEARTBEAT_OK, suppressing")
+
+		return true
+	}
+
+	if source != sourceHeartbeat && strings.Contains(reply, "NO_REPLY") {
+		slog.Info(source + ": NO_REPLY, suppressing")
 
 		return true
 	}

@@ -341,7 +341,7 @@ remind_at tool instead.`
 const defaultHeartbeatPrompt = `Run through the standing checks below.
 If nothing needs attention, reply with exactly: HEARTBEAT_OK`
 
-const defaultTriggerPrompt = `External trigger received. Always respond with a brief human-readable summary for the user — never a status code or sentinel. If duplicate or no-op, say so.`
+const defaultTriggerPrompt = `External trigger received.`
 
 func loadNostrConfig(env envReader) (NostrConfig, error) {
 	privateKey, err := loadNostrPrivateKey(env)

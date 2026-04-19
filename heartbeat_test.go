@@ -43,6 +43,50 @@ prose line
 	}
 }
 
+func TestShouldSuppressReply(t *testing.T) {
+	t.Parallel()
+
+	tests := []struct {
+		name   string
+		reply  string
+		source string
+		want   bool
+	}{
+		// HEARTBEAT_OK only works for heartbeats.
+		{"heartbeat ok", "HEARTBEAT_OK", sourceHeartbeat, true},
+		{"heartbeat ok in text", "all clear HEARTBEAT_OK done", sourceHeartbeat, true},
+		{"heartbeat ok for trigger", "HEARTBEAT_OK", sourceTrigger, false},
+		{"heartbeat ok for user", "HEARTBEAT_OK", sourceUser, false},
+
+		// NO_REPLY only works for triggers and user messages.
+		{"no reply for trigger", "NO_REPLY", sourceTrigger, true},
+		{"no reply for user", "NO_REPLY", sourceUser, true},
+		{"no reply in text for trigger", "nothing here NO_REPLY", sourceTrigger, true},
+		{"no reply for heartbeat", "NO_REPLY", sourceHeartbeat, false},
+
+		// Normal replies are never suppressed.
+		{"normal trigger reply", "You have 3 new emails", sourceTrigger, false},
+		{"normal user reply", "Here's the weather", sourceUser, false},
+		{"normal heartbeat reply", "Found urgent email", sourceHeartbeat, false},
+
+		// Empty replies are always suppressed.
+		{"empty heartbeat", "", sourceHeartbeat, true},
+		{"empty trigger", "", sourceTrigger, true},
+		{"empty user", "", sourceUser, true},
+	}
+
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			t.Parallel()
+
+			got := shouldSuppressReply(tt.reply, tt.source)
+			if got != tt.want {
+				t.Errorf("shouldSuppressReply(%q, %q) = %v, want %v", tt.reply, tt.source, got, tt.want)
+			}
+		})
+	}
+}
+
 func TestDispatchDueReminders(t *testing.T) {
 	t.Parallel()
 
