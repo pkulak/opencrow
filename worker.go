@@ -383,7 +383,17 @@ func (w *Worker) processPrompt(ctx context.Context, item Inbox) bool {
 	return false
 }
 
+// assembles the prompt for the given inbox item, injecting the current time
 func (w *Worker) buildPrompt(item Inbox) (string, bool) {
+	inner, ok := w.buildInnerPrompt(item)
+	if !ok {
+		return "", false
+	}
+
+	return injectTimestamp(inner), true
+}
+
+func (w *Worker) buildInnerPrompt(item Inbox) (string, bool) {
 	switch item.Source {
 	case sourceUser:
 		return item.Content, true
@@ -399,6 +409,13 @@ func (w *Worker) buildPrompt(item Inbox) (string, bool) {
 	default:
 		return "", false
 	}
+}
+
+// injectTimestamp prepends the current date/time to every prompt so the agent knows
+// the current time. Uses RFC 3339 (the internet profile of ISO 8601):
+// unambiguous, machine-readable, and includes UTC offset.
+func injectTimestamp(prompt string) string {
+	return "<time>" + time.Now().Format(time.RFC3339) + "</time>\n\n" + prompt
 }
 
 // handleNoRoomID requeues triggers (room may appear later) and drops

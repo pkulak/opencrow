@@ -6,6 +6,7 @@ import (
 	"os"
 	"path/filepath"
 	"strconv"
+	"strings"
 	"syscall"
 	"testing"
 	"time"
@@ -43,6 +44,51 @@ func newFakePiWorker(t *testing.T) *Worker {
 	t.Cleanup(w.stopPi)
 
 	return w
+}
+
+func TestInjectTimestamp(t *testing.T) {
+	t.Parallel()
+
+	got := injectTimestamp("hello")
+
+	rest, ok := strings.CutPrefix(got, "<time>")
+	if !ok {
+		t.Fatal("missing <time> prefix")
+	}
+
+	dt, rest, ok := strings.Cut(rest, "</time>\n\n")
+	if !ok {
+		t.Fatal("missing </time> and double newline separator")
+	}
+
+	if _, err := time.Parse(time.RFC3339, dt); err != nil {
+		t.Fatalf("timestamp %q is not RFC 3339: %v", dt, err)
+	}
+
+	if rest != "hello" {
+		t.Errorf("prompt after timestamp = %q, want %q", rest, "hello")
+	}
+}
+
+func TestBuildPrompt_InjectsTimestamp(t *testing.T) {
+	t.Parallel()
+
+	db := newTestDBAt(t.Context(), t, t.TempDir()+"/test.db")
+	inbox := newTestInboxWithDB(t.Context(), t, db)
+	w := NewWorker(inbox, PiConfig{}, "", "")
+
+	prompt, ok := w.buildPrompt(Inbox{Source: sourceUser, Content: "hello"})
+	if !ok {
+		t.Fatal("buildPrompt returned false")
+	}
+
+	if !strings.Contains(prompt, "<time>") {
+		t.Errorf("buildPrompt = %q, want <time> tag injected", prompt)
+	}
+
+	if !strings.Contains(prompt, "hello") {
+		t.Errorf("buildPrompt = %q, want original content present", prompt)
+	}
 }
 
 // Regression for the "No active session to compact" bug seen on eve:
