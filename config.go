@@ -81,6 +81,10 @@ type PiConfig struct {
 	Skills        []string
 	ShowToolCalls bool // OPENCROW_SHOW_TOOL_CALLS — relay tool_execution_start events to chat
 	DebugTiming   bool // OPENCROW_DEBUG_TIMING — append timing info to each reply
+	// DefaultRoomID is the fallback conversation ID for inbox items that
+	// have no ConversationID of their own (triggers, heartbeats). Takes
+	// precedence over the per-conversation SetRoomID mechanism.
+	DefaultRoomID string
 }
 
 // LoadConfig reads configuration from os.Getenv.
@@ -138,6 +142,7 @@ func loadConfig(getenv func(string) string) (*Config, error) {
 			Skills:        skills,
 			ShowToolCalls: env.bool("OPENCROW_SHOW_TOOL_CALLS"),
 			DebugTiming:   env.bool("OPENCROW_DEBUG_TIMING"),
+			DefaultRoomID: env.str("OPENCROW_MATRIX_ROOM_ID"),
 		},
 		Heartbeat: HeartbeatConfig{
 			Interval: heartbeatInterval,

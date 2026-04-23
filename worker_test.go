@@ -91,6 +91,36 @@ func TestBuildPrompt_InjectsTimestamp(t *testing.T) {
 	}
 }
 
+func TestResolveConversationID(t *testing.T) {
+	t.Parallel()
+
+	tests := []struct {
+		name        string
+		itemConvID  string
+		defaultRoom string
+		activeRoom  string
+		want        string
+	}{
+		{"item convID wins", "!room-A:matrix.org", "!default:matrix.org", "!active:matrix.org", "!room-A:matrix.org"},
+		{"defaultRoom when no item", "", "!default:matrix.org", "!active:matrix.org", "!default:matrix.org"},
+		{"activeRoom as last resort", "", "", "!active:matrix.org", "!active:matrix.org"},
+		{"all empty", "", "", "", ""},
+		{"defaultRoom beats activeRoom", "", "!default:matrix.org", "!active:matrix.org", "!default:matrix.org"},
+		{"item beats default even if active is different", "!item:matrix.org", "!default:matrix.org", "!active:matrix.org", "!item:matrix.org"},
+	}
+
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			t.Parallel()
+
+			got := resolveConversationID(tt.itemConvID, tt.defaultRoom, tt.activeRoom)
+			if got != tt.want {
+				t.Errorf("resolveConversationID = %q, want %q", got, tt.want)
+			}
+		})
+	}
+}
+
 // Regression for the "No active session to compact" bug seen on eve:
 // pi was spawned with exec.CommandContext bound to the per-item ctx,
 // which is cancelled the moment processItem returns. Go's CommandContext

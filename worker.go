@@ -310,10 +310,7 @@ func (w *Worker) processPrompt(ctx context.Context, item Inbox) bool {
 		return false
 	}
 
-	convID := item.ConversationID
-	if convID == "" {
-		convID = w.resolveRoomID()
-	}
+	convID := resolveConversationID(item.ConversationID, w.piCfg.DefaultRoomID, w.resolveRoomID())
 
 	if convID == "" {
 		return w.handleNoRoomID(item) //nolint:contextcheck // requeue uses context.Background intentionally
@@ -551,6 +548,24 @@ func (w *Worker) stopPi() {
 		slog.Info("worker: stopping pi process")
 		pi.Kill()
 	}
+}
+
+// resolveConversationID determines the conversation ID for routing a reply,
+// using the first non-empty value from the priority chain:
+//
+//	1. item.ConversationID — set by the user message that created the inbox row
+//	2. DefaultRoomID — OPENCROW_MATRIX_ROOM_ID, a stable default for triggers/heartbeats
+//	3. resolveRoomID() — last user conversation captured by SetRoomID
+func resolveConversationID(itemConvID, defaultRoomID, activeRoomID string) string {
+	if itemConvID != "" {
+		return itemConvID
+	}
+
+	if defaultRoomID != "" {
+		return defaultRoomID
+	}
+
+	return activeRoomID
 }
 
 func (w *Worker) resolveRoomID() string {
