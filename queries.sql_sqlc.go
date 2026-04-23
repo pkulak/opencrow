@@ -77,7 +77,7 @@ WHERE id = (
     ORDER BY priority ASC, id ASC
     LIMIT 1
 )
-RETURNING id, priority, source, content, reply_to, created_at
+RETURNING id, priority, source, content, reply_to, conversation_id, created_at
 `
 
 func (q *Queries) DequeueInbox(ctx context.Context) (Inbox, error) {
@@ -89,45 +89,10 @@ func (q *Queries) DequeueInbox(ctx context.Context) (Inbox, error) {
 		&i.Source,
 		&i.Content,
 		&i.ReplyTo,
+		&i.ConversationID,
 		&i.CreatedAt,
 	)
 	return i, err
-}
-
-const dequeueUserItems = `-- name: DequeueUserItems :many
-DELETE FROM inbox
-WHERE source = 'user'
-RETURNING id, priority, source, content, reply_to, created_at
-`
-
-func (q *Queries) DequeueUserItems(ctx context.Context) ([]Inbox, error) {
-	rows, err := q.db.QueryContext(ctx, dequeueUserItems)
-	if err != nil {
-		return nil, err
-	}
-	defer rows.Close()
-	var items []Inbox
-	for rows.Next() {
-		var i Inbox
-		if err := rows.Scan(
-			&i.ID,
-			&i.Priority,
-			&i.Source,
-			&i.Content,
-			&i.ReplyTo,
-			&i.CreatedAt,
-		); err != nil {
-			return nil, err
-		}
-		items = append(items, i)
-	}
-	if err := rows.Close(); err != nil {
-		return nil, err
-	}
-	if err := rows.Err(); err != nil {
-		return nil, err
-	}
-	return items, nil
 }
 
 const dueReminders = `-- name: DueReminders :many
@@ -162,8 +127,8 @@ func (q *Queries) DueReminders(ctx context.Context, datetime interface{}) ([]Rem
 }
 
 const enqueueHeartbeatIfEmpty = `-- name: EnqueueHeartbeatIfEmpty :execresult
-INSERT INTO inbox (priority, source, content, reply_to)
-SELECT ?, 'heartbeat', '', ''
+INSERT INTO inbox (priority, source, content, reply_to, conversation_id)
+SELECT ?, 'heartbeat', '', '', ''
 WHERE NOT EXISTS (SELECT 1 FROM inbox WHERE source = 'heartbeat')
 `
 
@@ -172,15 +137,16 @@ func (q *Queries) EnqueueHeartbeatIfEmpty(ctx context.Context, priority int64) (
 }
 
 const enqueueInbox = `-- name: EnqueueInbox :exec
-INSERT INTO inbox (priority, source, content, reply_to)
-VALUES (?, ?, ?, ?)
+INSERT INTO inbox (priority, source, content, reply_to, conversation_id)
+VALUES (?, ?, ?, ?, ?)
 `
 
 type EnqueueInboxParams struct {
-	Priority int64
-	Source   string
-	Content  string
-	ReplyTo  string
+	Priority       int64
+	Source         string
+	Content        string
+	ReplyTo        string
+	ConversationID string
 }
 
 func (q *Queries) EnqueueInbox(ctx context.Context, arg EnqueueInboxParams) error {
@@ -189,6 +155,7 @@ func (q *Queries) EnqueueInbox(ctx context.Context, arg EnqueueInboxParams) erro
 		arg.Source,
 		arg.Content,
 		arg.ReplyTo,
+		arg.ConversationID,
 	)
 	return err
 }
@@ -225,7 +192,7 @@ func (q *Queries) InsertReminder(ctx context.Context, arg InsertReminderParams) 
 }
 
 const peekInbox = `-- name: PeekInbox :one
-SELECT id, priority, source, content, reply_to, created_at
+SELECT id, priority, source, content, reply_to, conversation_id, created_at
 FROM inbox
 ORDER BY priority ASC, id ASC
 LIMIT 1
@@ -240,6 +207,7 @@ func (q *Queries) PeekInbox(ctx context.Context) (Inbox, error) {
 		&i.Source,
 		&i.Content,
 		&i.ReplyTo,
+		&i.ConversationID,
 		&i.CreatedAt,
 	)
 	return i, err

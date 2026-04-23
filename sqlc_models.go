@@ -5,12 +5,13 @@
 package main
 
 type Inbox struct {
-	ID        int64
-	Priority  int64
-	Source    string
-	Content   string
-	ReplyTo   string
-	CreatedAt string
+	ID             int64
+	Priority       int64
+	Source         string
+	Content        string
+	ReplyTo        string
+	ConversationID string
+	CreatedAt      string
 }
 
 type Reminders struct {

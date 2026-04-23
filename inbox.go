@@ -1,12 +1,10 @@
 package main
 
 import (
-	"cmp"
 	"context"
 	"database/sql"
 	"fmt"
 	"log/slog"
-	"slices"
 )
 
 // Priority levels for inbox items. Lower number = higher priority.
@@ -39,12 +37,13 @@ func NewInboxStore(ctx context.Context, db *sql.DB) (*InboxStore, error) {
 }
 
 // Enqueue inserts an item into the inbox.
-func (s *InboxStore) Enqueue(ctx context.Context, priority int64, source, content, replyTo string) error {
+func (s *InboxStore) Enqueue(ctx context.Context, priority int64, source, content, replyTo, conversationID string) error {
 	if err := s.queries.EnqueueInbox(ctx, EnqueueInboxParams{
-		Priority: priority,
-		Source:   source,
-		Content:  content,
-		ReplyTo:  replyTo,
+		Priority:       priority,
+		Source:         source,
+		Content:        content,
+		ReplyTo:        replyTo,
+		ConversationID: conversationID,
 	}); err != nil {
 		return fmt.Errorf("enqueuing inbox item: %w", err)
 	}
@@ -68,10 +67,11 @@ func (s *InboxStore) Requeue(ctx context.Context, item Inbox) error {
 	}
 
 	if err := s.queries.EnqueueInbox(ctx, EnqueueInboxParams{
-		Priority: item.Priority,
-		Source:   item.Source,
-		Content:  item.Content,
-		ReplyTo:  item.ReplyTo,
+		Priority:       item.Priority,
+		Source:         item.Source,
+		Content:        item.Content,
+		ReplyTo:        item.ReplyTo,
+		ConversationID: item.ConversationID,
 	}); err != nil {
 		return fmt.Errorf("requeueing %s item: %w", item.Source, err)
 	}
@@ -79,22 +79,7 @@ func (s *InboxStore) Requeue(ctx context.Context, item Inbox) error {
 	return nil
 }
 
-// DequeueUserBatch atomically removes all user items from the inbox,
-// returning them sorted by ID (insertion order). Returns nil (not an
-// error) if no user items exist.
-func (s *InboxStore) DequeueUserBatch(ctx context.Context) ([]Inbox, error) {
-	items, err := s.queries.DequeueUserItems(ctx)
-	if err != nil {
-		return nil, fmt.Errorf("dequeuing user batch: %w", err)
-	}
 
-	// SQLite's DELETE ... RETURNING doesn't guarantee order.
-	slices.SortFunc(items, func(a, b Inbox) int {
-		return cmp.Compare(a.ID, b.ID)
-	})
-
-	return items, nil
-}
 
 // Count returns the number of items in the inbox.
 func (s *InboxStore) Count(ctx context.Context) (int64, error) {

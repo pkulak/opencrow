@@ -178,7 +178,7 @@ func (w *Worker) Compact(ctx context.Context) (*CompactResult, error) {
 	w.compactResult = ch
 	w.mu.Unlock()
 
-	if err := w.inbox.Enqueue(ctx, PriorityUser, sourceCompact, "", ""); err != nil {
+	if err := w.inbox.Enqueue(ctx, PriorityUser, sourceCompact, "", "", ""); err != nil {
 		w.mu.Lock()
 		w.compactResult = nil
 		w.mu.Unlock()
@@ -266,45 +266,10 @@ func (w *Worker) drainOnce(ctx context.Context) {
 			return
 		}
 
-		if item.Source == sourceUser {
-			item = w.mergeUserItems(ctx, item)
-		}
-
 		if w.processItem(ctx, item) {
 			return
 		}
 	}
-}
-
-// mergeUserItems folds any additional queued user messages into item so
-// the agent sees one combined prompt instead of N separate turns.
-func (w *Worker) mergeUserItems(ctx context.Context, item Inbox) Inbox {
-	extra, err := w.inbox.DequeueUserBatch(ctx)
-	if err != nil {
-		slog.Error("worker: failed to dequeue user batch", "error", err)
-
-		return item
-	}
-
-	if len(extra) == 0 {
-		return item
-	}
-
-	slog.Info("worker: merging user messages", "count", 1+len(extra))
-
-	var sb strings.Builder
-
-	sb.WriteString(item.Content)
-
-	for _, e := range extra {
-		sb.WriteByte('\n')
-		sb.WriteString(e.Content)
-	}
-
-	item.Content = sb.String()
-	item.ReplyTo = extra[len(extra)-1].ReplyTo
-
-	return item
 }
 
 // processItem handles one inbox item. Returns true if drainOnce should
@@ -345,7 +310,11 @@ func (w *Worker) processPrompt(ctx context.Context, item Inbox) bool {
 		return false
 	}
 
-	convID := w.resolveRoomID()
+	convID := item.ConversationID
+	if convID == "" {
+		convID = w.resolveRoomID()
+	}
+
 	if convID == "" {
 		return w.handleNoRoomID(item) //nolint:contextcheck // requeue uses context.Background intentionally
 	}

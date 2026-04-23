@@ -95,7 +95,7 @@ func dispatchDueReminders(ctx context.Context, w *Worker) {
 
 		content := fmt.Sprintf("Reminder (set for %s): %s", r.FireAt, r.Prompt)
 
-		if err := w.inbox.Enqueue(ctx, PriorityTrigger, sourceTrigger, content, ""); err != nil {
+		if err := w.inbox.Enqueue(ctx, PriorityTrigger, sourceTrigger, content, "", ""); err != nil {
 			// DueReminders is DELETE…RETURNING, so the row is already gone.
 			// Re-insert it so the next tick retries instead of silently
 			// dropping the reminder.

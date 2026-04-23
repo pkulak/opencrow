@@ -55,7 +55,7 @@ func triggerReadLoop(ctx context.Context, w *Worker, pipePath string) {
 
 		slog.Info("trigger: received", "content", line)
 
-		if err := w.inbox.Enqueue(ctx, PriorityTrigger, sourceTrigger, line, ""); err != nil {
+		if err := w.inbox.Enqueue(ctx, PriorityTrigger, sourceTrigger, line, "", ""); err != nil {
 			slog.Error("trigger: failed to enqueue", "error", err)
 
 			continue

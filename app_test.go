@@ -215,6 +215,10 @@ func TestApp_PromptEnqueuesInbox(t *testing.T) {
 	if !strings.Contains(item.Content, "<from-id>@user:example.com</from-id>") {
 		t.Errorf("Content = %q, want to contain <from-id> tag", item.Content)
 	}
+
+	if item.ConversationID != testRoom {
+		t.Errorf("ConversationID = %q, want %q", item.ConversationID, testRoom)
+	}
 }
 
 func TestApp_BuildPromptText_ReplyToUserMessage(t *testing.T) {
@@ -415,6 +419,41 @@ func TestBuildPromptText_ContextTags(t *testing.T) {
 	// Verify structure: tags block, blank line, then content.
 	if !strings.Contains(got, "\n\nhello there") {
 		t.Errorf("buildPromptText should have blank line before content, got: %q", got)
+	}
+}
+
+func TestInbox_ConversationID(t *testing.T) {
+	t.Parallel()
+
+	ctx := context.Background()
+	db := newTestDB(ctx, t)
+	inbox := newTestInboxWithDB(ctx, t, db)
+
+	if err := inbox.Enqueue(ctx, PriorityUser, sourceUser, "hello", "reply-1", "!room:matrix.org"); err != nil {
+		t.Fatal(err)
+	}
+
+	item, err := inbox.Dequeue(ctx)
+	if err != nil {
+		t.Fatal(err)
+	}
+
+	if item.ConversationID != "!room:matrix.org" {
+		t.Errorf("ConversationID = %q, want %q", item.ConversationID, "!room:matrix.org")
+	}
+
+	// Items enqueued without a conversation ID should default to empty.
+	if err := inbox.Enqueue(ctx, PriorityTrigger, sourceTrigger, "event", "", ""); err != nil {
+		t.Fatal(err)
+	}
+
+	item2, err := inbox.Dequeue(ctx)
+	if err != nil {
+		t.Fatal(err)
+	}
+
+	if item2.ConversationID != "" {
+		t.Errorf("ConversationID = %q, want empty", item2.ConversationID)
 	}
 }
 

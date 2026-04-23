@@ -139,7 +139,7 @@ func (a *App) handlePrompt(ctx context.Context, msg backend.Message) {
 
 	promptText := a.buildPromptText(ctx, msg)
 
-	if err := a.inbox.Enqueue(ctx, PriorityUser, sourceUser, promptText, msg.ReplyToID); err != nil {
+	if err := a.inbox.Enqueue(ctx, PriorityUser, sourceUser, promptText, msg.ReplyToID, msg.ConversationID); err != nil {
 		slog.Error("failed to enqueue user message", "error", err)
 		a.backend.SendMessage(ctx, msg.ConversationID, fmt.Sprintf("Error: %v", err), "")
 

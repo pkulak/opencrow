@@ -62,9 +62,9 @@ func TestInbox_PriorityOrder(t *testing.T) {
 	ctx := context.Background()
 	inbox := newTestInbox(ctx, t)
 
-	must(t, inbox.Enqueue(ctx, PriorityHeartbeat, sourceHeartbeat, "", ""))
-	must(t, inbox.Enqueue(ctx, PriorityTrigger, sourceTrigger, "event data", ""))
-	must(t, inbox.Enqueue(ctx, PriorityUser, sourceUser, "urgent msg", ""))
+	must(t, inbox.Enqueue(ctx, PriorityHeartbeat, sourceHeartbeat, "", "", ""))
+	must(t, inbox.Enqueue(ctx, PriorityTrigger, sourceTrigger, "event data", "", ""))
+	must(t, inbox.Enqueue(ctx, PriorityUser, sourceUser, "urgent msg", "", ""))
 
 	item1, err := inbox.Dequeue(ctx)
 	must(t, err)
@@ -203,7 +203,7 @@ func TestInbox_Persistence(t *testing.T) {
 	db1 := newTestDBAt(ctx, t, dbPath)
 	inbox1 := newTestInboxWithDB(ctx, t, db1)
 
-	must(t, inbox1.Enqueue(ctx, PriorityTrigger, sourceTrigger, "survived crash", ""))
+	must(t, inbox1.Enqueue(ctx, PriorityTrigger, sourceTrigger, "survived crash", "", ""))
 	db1.Close()
 
 	inbox2 := newTestInboxWithDB(ctx, t, newTestDBAt(ctx, t, dbPath))
@@ -223,87 +223,6 @@ func TestInbox_Persistence(t *testing.T) {
 	}
 }
 
-func TestWorker_MergeUserItems(t *testing.T) {
-	t.Parallel()
-
-	ctx := context.Background()
-	inbox := newTestInbox(ctx, t)
-
-	worker := NewWorker(inbox, PiConfig{SessionDir: t.TempDir()}, "", "")
-
-	// Enqueue extra user messages that mergeUserItems should fold in.
-	must(t, inbox.Enqueue(ctx, PriorityUser, sourceUser, "second", "reply-2"))
-	must(t, inbox.Enqueue(ctx, PriorityUser, sourceUser, "third", "reply-3"))
-
-	first := Inbox{Source: sourceUser, Content: "first", ReplyTo: "reply-1"}
-	merged := worker.mergeUserItems(ctx, first)
-
-	if merged.Content != "first\nsecond\nthird" {
-		t.Errorf("Content = %q, want %q", merged.Content, "first\nsecond\nthird")
-	}
-
-	if merged.ReplyTo != "reply-3" {
-		t.Errorf("ReplyTo = %q, want %q", merged.ReplyTo, "reply-3")
-	}
-
-	count, err := inbox.Count(ctx)
-	must(t, err)
-
-	if count != 0 {
-		t.Errorf("inbox should be empty after merge, got %d", count)
-	}
-}
-
-func TestInbox_DequeueUserBatch(t *testing.T) {
-	t.Parallel()
-
-	ctx := context.Background()
-	inbox := newTestInbox(ctx, t)
-
-	must(t, inbox.Enqueue(ctx, PriorityUser, sourceUser, "first", "reply-1"))
-	must(t, inbox.Enqueue(ctx, PriorityUser, sourceUser, "second", "reply-2"))
-	must(t, inbox.Enqueue(ctx, PriorityTrigger, sourceTrigger, "event", ""))
-
-	items, err := inbox.DequeueUserBatch(ctx)
-	must(t, err)
-
-	if len(items) != 2 {
-		t.Fatalf("got %d items, want 2", len(items))
-	}
-
-	if items[0].Content != "first" || items[1].Content != "second" {
-		t.Errorf("contents = [%q, %q], want [first, second]", items[0].Content, items[1].Content)
-	}
-
-	// Trigger should still be there.
-	count, err := inbox.Count(ctx)
-	must(t, err)
-
-	if count != 1 {
-		t.Fatalf("remaining count = %d, want 1", count)
-	}
-}
-
-func TestInbox_DequeueUserBatch_Empty(t *testing.T) {
-	t.Parallel()
-
-	ctx := context.Background()
-	inbox := newTestInbox(ctx, t)
-
-	must(t, inbox.Enqueue(ctx, PriorityTrigger, sourceTrigger, "event", ""))
-
-	items, err := inbox.DequeueUserBatch(ctx)
-	must(t, err)
-
-	if len(items) != 0 {
-		t.Fatalf("got %d items, want 0", len(items))
-	}
-}
-
-// TestOpenDB_Pragmas guards against regressing to mattn/go-sqlite3
-// DSN syntax (_journal_mode=WAL), which modernc.org/sqlite silently
-// ignores, leaving busy_timeout=0 and causing SQLITE_BUSY under
-// concurrent writes (observed: fifo enqueue racing user messages).
 func TestOpenDB_Pragmas(t *testing.T) {
 	t.Parallel()
 
@@ -327,6 +246,60 @@ func TestOpenDB_Pragmas(t *testing.T) {
 
 	if bt != 5000 {
 		t.Errorf("busy_timeout = %d, want 5000", bt)
+	}
+}
+
+func TestOpenDB_MigratesConversationID(t *testing.T) {
+	t.Parallel()
+
+	ctx := context.Background()
+	dir := t.TempDir()
+
+	// Create a database with the old schema (no conversation_id column).
+	dbPath := dir + "/opencrow.db"
+	db, err := sql.Open("sqlite", dbPath+sqliteDSNParams)
+	if err != nil {
+		t.Fatal(err)
+	}
+
+	_, err = db.ExecContext(ctx, `
+		CREATE TABLE IF NOT EXISTS inbox (
+			id         INTEGER PRIMARY KEY AUTOINCREMENT,
+			priority   INTEGER NOT NULL DEFAULT 2,
+			source     TEXT    NOT NULL,
+			content    TEXT    NOT NULL DEFAULT '',
+			reply_to   TEXT    NOT NULL DEFAULT '',
+			created_at TEXT    NOT NULL DEFAULT (strftime('%Y-%m-%dT%H:%M:%fZ', 'now'))
+		);
+	`)
+	if err != nil {
+		t.Fatal(err)
+	}
+
+	// Insert a row with the old schema.
+	_, err = db.ExecContext(ctx, "INSERT INTO inbox (priority, source, content) VALUES (0, 'user', 'old row')")
+	if err != nil {
+		t.Fatal(err)
+	}
+
+	db.Close()
+
+	// Reopen via openDB, which should migrate the schema.
+	db2, err := openDB(ctx, dir)
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer db2.Close()
+
+	// Verify the column exists by querying it.
+	var conversationID string
+	err = db2.QueryRowContext(ctx, "SELECT conversation_id FROM inbox WHERE source = 'user'").Scan(&conversationID)
+	if err != nil {
+		t.Fatalf("failed to query conversation_id after migration: %v", err)
+	}
+
+	if conversationID != "" {
+		t.Errorf("conversation_id = %q, want empty string for pre-migration row", conversationID)
 	}
 }
 

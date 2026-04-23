@@ -141,11 +141,37 @@ func openDB(ctx context.Context, sessionDir string) (*sql.DB, error) {
 		return nil, fmt.Errorf("migrating schema: %w", err)
 	}
 
+	// Migrate existing databases: add conversation_id column if absent.
+	if err := migrateInboxConversationID(ctx, db); err != nil {
+		db.Close()
+
+		return nil, fmt.Errorf("migrating inbox conversation_id: %w", err)
+	}
+
 	if err := migrateLegacyOutbox(ctx, db, sessionDir); err != nil {
 		slog.Warn("failed to migrate legacy sent_messages.db", "error", err)
 	}
 
 	return db, nil
+}
+
+// migrateInboxConversationID adds the conversation_id column to the inbox
+// table if it is missing
+func migrateInboxConversationID(ctx context.Context, db *sql.DB) error {
+	var colName string
+	err := db.QueryRowContext(ctx, "SELECT name FROM pragma_table_info('inbox') WHERE name = 'conversation_id'").Scan(&colName)
+	if err == nil {
+		// Column already exists — nothing to do.
+		return nil
+	}
+
+	slog.Info("migrating inbox: adding conversation_id column")
+
+	if _, err := db.ExecContext(ctx, `ALTER TABLE inbox ADD COLUMN conversation_id TEXT NOT NULL DEFAULT ''`); err != nil {
+		return fmt.Errorf("adding conversation_id column: %w", err)
+	}
+
+	return nil
 }
 
 func migrateLegacyOutbox(ctx context.Context, db *sql.DB, sessionDir string) error {

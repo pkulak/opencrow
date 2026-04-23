@@ -20,8 +20,8 @@ WHERE rowid IN (
 );
 
 -- name: EnqueueInbox :exec
-INSERT INTO inbox (priority, source, content, reply_to)
-VALUES (?, ?, ?, ?);
+INSERT INTO inbox (priority, source, content, reply_to, conversation_id)
+VALUES (?, ?, ?, ?, ?);
 
 -- name: DequeueInbox :one
 DELETE FROM inbox
@@ -30,10 +30,10 @@ WHERE id = (
     ORDER BY priority ASC, id ASC
     LIMIT 1
 )
-RETURNING id, priority, source, content, reply_to, created_at;
+RETURNING id, priority, source, content, reply_to, conversation_id, created_at;
 
 -- name: PeekInbox :one
-SELECT id, priority, source, content, reply_to, created_at
+SELECT id, priority, source, content, reply_to, conversation_id, created_at
 FROM inbox
 ORDER BY priority ASC, id ASC
 LIMIT 1;
@@ -44,17 +44,12 @@ DELETE FROM inbox WHERE id = ?;
 -- name: DeleteStaleItems :exec
 DELETE FROM inbox WHERE source IN ('heartbeat', 'compact');
 
--- name: DequeueUserItems :many
-DELETE FROM inbox
-WHERE source = 'user'
-RETURNING id, priority, source, content, reply_to, created_at;
-
 -- name: CountInbox :one
 SELECT count(*) FROM inbox;
 
 -- name: EnqueueHeartbeatIfEmpty :execresult
-INSERT INTO inbox (priority, source, content, reply_to)
-SELECT ?, 'heartbeat', '', ''
+INSERT INTO inbox (priority, source, content, reply_to, conversation_id)
+SELECT ?, 'heartbeat', '', '', ''
 WHERE NOT EXISTS (SELECT 1 FROM inbox WHERE source = 'heartbeat');
 
 -- name: DueReminders :many
