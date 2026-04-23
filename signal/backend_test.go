@@ -58,7 +58,7 @@ func TestDecodeReceiveNotification_WrappedSubscription(t *testing.T) {
 		t.Fatalf("ReplyToID = %q, want 1699999999000", msg.ReplyToID)
 	}
 
-	wantText := "see file\n[User sent a file (diagram): /var/lib/signal-cli/attachments/abc.png]\nUse the read tool to view it."
+	wantText := "see file\n[User sent a file (diagram): /var/lib/signal-cli/attachments/abc.png]"
 	if msg.Text != wantText {
 		t.Fatalf("Text = %q, want %q", msg.Text, wantText)
 	}

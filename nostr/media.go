@@ -57,7 +57,7 @@ func (b *Backend) handleFileMessage(ctx context.Context, rumor gonostr.Event, co
 
 	desc := descFromMIME(mimeType)
 
-	return fmt.Sprintf("[User sent a %s: %s]\nUse the read tool to view it.", desc, localPath)
+	return fmt.Sprintf("[User sent a %s: %s]", desc, localPath)
 }
 
 // maybeAddExtension renames a file to include a proper extension when the

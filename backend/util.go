@@ -61,7 +61,7 @@ func AttachmentText(caption, path string) string {
 		return fmt.Sprintf("[User sent a file (%s)]", caption)
 	}
 
-	return fmt.Sprintf("[User sent a file (%s): %s]\nUse the read tool to view it.", caption, path)
+	return fmt.Sprintf("[User sent a file (%s): %s]", caption, path)
 }
 
 // sanitizeLine replaces CR/LF with spaces so multi-line remote input
