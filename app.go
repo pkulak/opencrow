@@ -4,9 +4,11 @@ import (
 	"context"
 	"database/sql"
 	"fmt"
+	"html"
 	"log/slog"
 	"path/filepath"
 	"regexp"
+	"strconv"
 	"strings"
 
 	"github.com/pinpox/opencrow/backend"
@@ -147,7 +149,7 @@ func (a *App) handlePrompt(ctx context.Context, msg backend.Message) {
 	a.worker.Notify(PriorityUser)
 }
 
-// buildPromptText prepends reply-quote context to the message text.
+// buildPromptText prepends context tags and reply-quote context to the message text.
 func (a *App) buildPromptText(ctx context.Context, msg backend.Message) string {
 	promptText := msg.Text
 
@@ -159,7 +161,46 @@ func (a *App) buildPromptText(ctx context.Context, msg backend.Message) string {
 		}
 	}
 
+	if tags := buildContextTags(msg); tags != "" {
+		promptText = tags + "\n\n" + promptText
+	}
+
 	return promptText
+}
+
+// buildContextTags returns a block of XML-style context tags derived from the
+// message's enrichment fields. Each non-zero field produces one line; zero
+// values are omitted entirely. Returns an empty string if no fields are set.
+func buildContextTags(msg backend.Message) string {
+	var lines []string
+
+	if msg.SenderID != "" {
+		lines = append(lines, "<from-id>"+escape(msg.SenderID)+"</from-id>")
+	}
+
+	if msg.ConversationID != "" {
+		lines = append(lines, "<room-id>"+escape(msg.ConversationID)+"</room-id>")
+	}
+
+	lines = append(lines, "<is-dm>"+strconv.FormatBool(msg.IsDM)+"</is-dm>")
+
+	if msg.SenderName != "" {
+		lines = append(lines, "<from-name>"+escape(msg.SenderName)+"</from-name>")
+	}
+
+	if msg.RoomName != "" && !msg.IsDM {
+		lines = append(lines, "<room-name>"+escape(msg.RoomName)+"</room-name>")
+	}
+
+	if msg.RoomSize > 0 && !msg.IsDM {
+		lines = append(lines, "<room-size>"+strconv.Itoa(msg.RoomSize)+"</room-size>")
+	}
+
+	return strings.Join(lines, "\n")
+}
+
+func escape(s string) string {
+	return html.EscapeString(s)
 }
 
 // sendReplyWithFiles extracts <sendfile> tags, uploads each file, and

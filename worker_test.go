@@ -56,9 +56,9 @@ func TestInjectTimestamp(t *testing.T) {
 		t.Fatal("missing <time> prefix")
 	}
 
-	dt, rest, ok := strings.Cut(rest, "</time>\n\n")
+	dt, rest, ok := strings.Cut(rest, "</time>\n")
 	if !ok {
-		t.Fatal("missing </time> and double newline separator")
+		t.Fatal("missing </time> and newline separator")
 	}
 
 	if _, err := time.Parse(time.RFC3339, dt); err != nil {

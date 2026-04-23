@@ -59,6 +59,13 @@ type Message struct {
 	Text           string // message text (or synthesized "[User sent file: ...]")
 	MessageID      string // backend-specific ID of this message (used to resolve future reply-to references)
 	ReplyToID      string // backend-specific ID of the message being replied to (empty if not a reply)
+
+	// Enrichment fields — populated by backends that can provide them.
+	// All are optional; zero values are ignored when building context tags.
+	SenderName string // display name (Matrix only, for now)
+	RoomName   string // room/channel title   (Matrix only, for now)
+	RoomSize   int    // member count          (Matrix only, for now)
+	IsDM       bool   // true = 1:1 conversation
 }
 
 // MessageHandler is a callback invoked by the backend for each inbound user message.

@@ -148,6 +148,7 @@ func decodeReceiveMessage(payload []byte, configDir string) (*backend.Message, b
 		Text:           text,
 		MessageID:      messageID,
 		ReplyToID:      replyTo,
+		IsDM:           !strings.HasPrefix(conversationID, groupConversationPrefix),
 	}, true, nil
 }
 

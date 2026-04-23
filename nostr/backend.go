@@ -551,6 +551,7 @@ func (b *Backend) processGiftWrap(ctx, pubCtx context.Context, evt *gonostr.Even
 		Text:           text,
 		MessageID:      rumor.ID.Hex(),
 		ReplyToID:      rumorReplyTarget(rumor),
+		IsDM:           true,
 	})
 }
 

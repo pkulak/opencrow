@@ -43,6 +43,14 @@ type Config struct {
 	SessionBaseDir string // base dir for per-conversation session subdirs
 }
 
+// roomState caches per-room metadata that would otherwise require a
+// homeserver round-trip on every incoming message. Kept current by the
+// sync-stream hooks in Run.
+type roomState struct {
+	name    string                // room name, "" if unset
+	members map[id.UserID]string  // joined user → display name (may be "")
+}
+
 // Backend implements backend.Backend for Matrix.
 type Backend struct {
 	client        *mautrix.Client
@@ -55,6 +63,9 @@ type Backend struct {
 
 	roomMu     sync.Mutex
 	activeRoom string
+
+	roomStateMu sync.RWMutex
+	roomStates  map[id.RoomID]*roomState
 
 	// onRoomCleanup is called when a room is cleaned up (leave/ban).
 	// Wired by the caller to kill pi processes and stop trigger pipes.
@@ -82,6 +93,7 @@ func New(cfg Config, handler backend.MessageHandler) (*Backend, error) {
 		cfg:          cfg,
 		userID:       id.UserID(cfg.UserID),
 		allowedUsers: cfg.AllowedUsers,
+		roomStates:   make(map[id.RoomID]*roomState),
 	}, nil
 }
 
@@ -103,6 +115,10 @@ func (b *Backend) Run(ctx context.Context) error {
 
 	syncer.OnEventType(event.StateMember, func(_ context.Context, evt *event.Event) {
 		go b.handleMembership(ctx, evt)
+	})
+
+	syncer.OnEventType(event.StateRoomName, func(_ context.Context, evt *event.Event) {
+		b.updateRoomName(evt)
 	})
 
 	syncer.OnEventType(event.EventMessage, func(_ context.Context, evt *event.Event) {
@@ -415,6 +431,8 @@ func (b *Backend) handleMembership(ctx context.Context, evt *event.Event) {
 		return
 	}
 
+	b.updateRoomMembers(evt, mem)
+
 	switch mem.Membership {
 	case event.MembershipInvite:
 		b.handleInvite(ctx, evt)
@@ -497,8 +515,106 @@ func (b *Backend) cleanupRoom(roomID string) {
 	}
 	b.roomMu.Unlock()
 
+	b.roomStateMu.Lock()
+	delete(b.roomStates, id.RoomID(roomID))
+	b.roomStateMu.Unlock()
+
 	if b.onRoomCleanup != nil {
 		b.onRoomCleanup(roomID)
+	}
+}
+
+// roomStateSnapshot is a race-free view of a cached room's state at a
+// single point in time, suitable for enriching one message.
+type roomStateSnapshot struct {
+	name        string
+	memberCount int
+	senderName  string
+}
+
+// getRoomState returns a snapshot of cached room state for the given sender,
+// fetching from the homeserver on a miss. Returns an error only if the
+// members fetch fails; a missing m.room.name is treated as an unnamed room.
+func (b *Backend) getRoomState(ctx context.Context, roomID id.RoomID, sender id.UserID) (roomStateSnapshot, error) {
+	b.roomStateMu.RLock()
+	if rs, ok := b.roomStates[roomID]; ok {
+		snap := roomStateSnapshot{
+			name:        rs.name,
+			memberCount: len(rs.members),
+			senderName:  rs.members[sender],
+		}
+		b.roomStateMu.RUnlock()
+
+		return snap, nil
+	}
+	b.roomStateMu.RUnlock()
+
+	members, err := b.client.JoinedMembers(ctx, roomID)
+	if err != nil {
+		return roomStateSnapshot{}, fmt.Errorf("fetching joined members: %w", err)
+	}
+
+	fresh := &roomState{
+		members: make(map[id.UserID]string, len(members.Joined)),
+	}
+	for uid, m := range members.Joined {
+		fresh.members[uid] = m.DisplayName
+	}
+
+	var roomName event.RoomNameEventContent
+	if err := b.client.StateEvent(ctx, roomID, event.StateRoomName, "", &roomName); err == nil {
+		fresh.name = roomName.Name
+	}
+
+	b.roomStateMu.Lock()
+	b.roomStates[roomID] = fresh
+	b.roomStateMu.Unlock()
+
+	return roomStateSnapshot{
+		name:        fresh.name,
+		memberCount: len(fresh.members),
+		senderName:  fresh.members[sender],
+	}, nil
+}
+
+// updateRoomMembers patches the cached member map based on a membership
+// state event. No-op if the room isn't cached yet — the first message in
+// that room will populate it via getRoomState.
+func (b *Backend) updateRoomMembers(evt *event.Event, mem *event.MemberEventContent) {
+	if evt.StateKey == nil {
+		return
+	}
+	user := id.UserID(*evt.StateKey)
+
+	b.roomStateMu.Lock()
+	defer b.roomStateMu.Unlock()
+
+	rs, ok := b.roomStates[evt.RoomID]
+	if !ok {
+		return
+	}
+
+	switch mem.Membership {
+	case event.MembershipJoin:
+		rs.members[user] = mem.Displayname
+	case event.MembershipLeave, event.MembershipBan:
+		delete(rs.members, user)
+	}
+}
+
+// updateRoomName patches the cached room name based on an m.room.name
+// state event. No-op if the room isn't cached.
+func (b *Backend) updateRoomName(evt *event.Event) {
+	nameEvt := evt.Content.AsRoomName()
+	if nameEvt == nil {
+		return
+	}
+
+	b.roomStateMu.Lock()
+	defer b.roomStateMu.Unlock()
+
+	if rs, ok := b.roomStates[evt.RoomID]; ok {
+		rs.name = nameEvt.Name
 	}
 }
 
@@ -537,13 +653,26 @@ func (b *Backend) handleMessage(ctx context.Context, evt *event.Event) {
 		replyToID = string(msg.RelatesTo.GetReplyTo())
 	}
 
-	b.handler(ctx, backend.Message{
+	// Enrich the message with room/sender metadata from the cache
+	// (lazy-populated on first access, kept current by sync hooks).
+	rzMsg := backend.Message{
 		ConversationID: roomID,
 		SenderID:       string(evt.Sender),
 		Text:           text,
 		MessageID:      string(evt.ID),
 		ReplyToID:      replyToID,
-	})
+	}
+
+	if rs, err := b.getRoomState(ctx, evt.RoomID, evt.Sender); err != nil {
+		slog.Warn("failed to query room state", "room", roomID, "error", err)
+	} else {
+		rzMsg.RoomSize = rs.memberCount
+		rzMsg.IsDM = rs.memberCount == 2
+		rzMsg.RoomName = rs.name
+		rzMsg.SenderName = rs.senderName
+	}
+
+	b.handler(ctx, rzMsg)
 }
 
 // filterMessage checks whether the event should be processed and returns

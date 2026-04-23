@@ -415,7 +415,7 @@ func (w *Worker) buildInnerPrompt(item Inbox) (string, bool) {
 // the current time. Uses RFC 3339 (the internet profile of ISO 8601):
 // unambiguous, machine-readable, and includes UTC offset.
 func injectTimestamp(prompt string) string {
-	return "<time>" + time.Now().Format(time.RFC3339) + "</time>\n\n" + prompt
+	return "<time>" + time.Now().Format(time.RFC3339) + "</time>\n" + prompt
 }
 
 // handleNoRoomID requeues triggers (room may appear later) and drops

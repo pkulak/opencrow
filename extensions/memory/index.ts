@@ -70,6 +70,26 @@ const TRIGGER_CLOSE = "--- end trigger ---";
 const HEARTBEAT_MARKER = "Standing checks:";
 
 /**
+ * Context tags prepended by buildPromptText (app.go) and the timestamp
+ * wrapper from injectTimestamp (worker.go). These are protocol metadata —
+ * sender IDs, room IDs, member counts, timestamps — that change between
+ * turns and would poison embeddings and yield stale "facts" about room
+ * sizes or Matrix IDs. Kept here (not exported from Go) for the same
+ * reason as the other sentinels: the extension ships as a separate Nix
+ * derivation; if the Go side changes tag names, the regex becomes a
+ * no-op, which is the safe direction.
+ */
+const CONTEXT_TAG_RE =
+  /^<(from-id|room-id|is-dm|from-name|room-name|room-size|time)>.*<\/\1>$/gm;
+
+function stripContextTags(text: string): string {
+  return text
+    .replace(CONTEXT_TAG_RE, "")
+    .replace(/\n{3,}/g, "\n\n")
+    .trimStart();
+}
+
+/**
  * scrubPrompt reduces an opencrow-generated user prompt to its
  * semantic payload so recall/extract key on content, not boilerplate.
  *
@@ -91,10 +111,12 @@ function scrubPrompt(prompt: string): string | null {
   if (open >= 0) {
     const start = open + TRIGGER_OPEN.length;
     const close = p.indexOf(TRIGGER_CLOSE, start);
-    return (close >= 0 ? p.slice(start, close) : p.slice(start)).trim();
+    const payload =
+      (close >= 0 ? p.slice(start, close) : p.slice(start)).trim();
+    return stripContextTags(payload);
   }
 
-  return prompt;
+  return stripContextTags(p);
 }
 
 /**
