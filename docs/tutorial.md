@@ -59,6 +59,11 @@ Or extract it from an existing Matrix client's session.
 
       # Restrict access to specific Matrix users (optional, empty allows all)
       OPENCROW_ALLOWED_USERS = "@alice:matrix.org,@bob:matrix.org";
+
+      # Optional: stable default room for heartbeats/triggers/reminders.
+      # When set, Matrix also switches from "join the first room only"
+      # to "join all allowed invited rooms".
+      # OPENCROW_MATRIX_ROOM_ID = "!your-room-id:matrix.org";
     };
 
     # Extra packages available to the agent inside the container
@@ -90,6 +95,20 @@ services.opencrow.environmentFiles = [
   /run/secrets/opencrow-env
 ];
 ```
+
+If you want one room to act as the bot's default home for background traffic,
+add this to `services.opencrow.environment`:
+
+```nix
+OPENCROW_MATRIX_ROOM_ID = "!your-room-id:matrix.org";
+```
+
+That variable has two effects:
+
+- heartbeats, reminders, and trigger-pipe messages go to that room by default
+- the bot accepts all allowed Matrix invites instead of only the first one
+
+The bot still uses one shared session across rooms and DMs.
 
 **Or use OAuth instead of an API key** — if you have a Claude Pro/Max
 subscription, skip `ANTHROPIC_API_KEY` and authenticate interactively after

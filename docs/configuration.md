@@ -64,7 +64,25 @@ attachments. Multiple `<sendfile>` tags can appear in a single response.
 | `OPENCROW_MATRIX_DEVICE_ID` | No | Device ID (auto-resolved if omitted) |
 | `OPENCROW_MATRIX_PICKLE_KEY` | No | Pickle key for crypto DB |
 | `OPENCROW_MATRIX_CRYPTO_DB` | No | Path to crypto SQLite DB |
+| `OPENCROW_MATRIX_ROOM_ID` | No | Default Matrix room ID for triggers, heartbeats, and reminders. When set, Matrix invite handling also switches to multi-room mode. |
 | `OPENCROW_ALLOWED_USERS` | No | Comma-separated Matrix user IDs allowed to interact |
+
+### Matrix room behavior
+
+By default, Matrix runs in **single-room mode**: the bot joins the first
+allowed room it is invited to and ignores later invites.
+
+If `OPENCROW_MATRIX_ROOM_ID` is set, Matrix switches to **multi-room mode**:
+
+two things happen:
+
+1. triggers, heartbeats, and reminders are routed to that room by default
+2. the bot accepts all allowed Matrix invites instead of claiming just one room
+
+This does **not** create separate sessions per room. The bot still runs as one
+shared agent with one shared session and memory across all rooms and DMs.
+Commands like `!restart`, `!stop`, and `!compact` still act on that shared
+agent.
 
 ## Nostr configuration
 

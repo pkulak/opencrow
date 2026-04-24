@@ -9,8 +9,11 @@ OpenCrow is a messaging bot that bridges chat messages to
 [pi](https://github.com/badlogic/pi-mono), a coding agent with built-in tools,
 session persistence, auto-compaction, and multi-provider LLM support. Instead of
 reimplementing all of that in Go, OpenCrow spawns pi as a long-lived subprocess
-via its RPC protocol and acts as a thin bridge. The bot operates with a single
-active conversation at a time; session data persists across restarts.
+via its RPC protocol and acts as a thin bridge. By default, the bot behaves as
+a single shared agent with one session. On Matrix, setting
+`OPENCROW_MATRIX_ROOM_ID` gives triggers/heartbeats a stable default room and
+also enables multi-room invite handling, while still keeping one shared session
+across rooms and DMs.
 
 OpenCrow supports multiple messaging backends:
 - **Matrix** — E2EE chat rooms via mautrix
