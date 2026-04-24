@@ -41,14 +41,15 @@ type Config struct {
 	PickleKey      string
 	CryptoDBPath   string
 	SessionBaseDir string // base dir for per-conversation session subdirs
+	MultiRoom      bool   // are we expecting to be in multiple/group chats?
 }
 
 // roomState caches per-room metadata that would otherwise require a
 // homeserver round-trip on every incoming message. Kept current by the
 // sync-stream hooks in Run.
 type roomState struct {
-	name    string                // room name, "" if unset
-	members map[id.UserID]string  // joined user → display name (may be "")
+	name    string               // room name, "" if unset
+	members map[id.UserID]string // joined user → display name (may be "")
 }
 
 // Backend implements backend.Backend for Matrix.
@@ -455,13 +456,14 @@ func (b *Backend) handleInvite(ctx context.Context, evt *event.Event) {
 	}
 
 	b.roomMu.Lock()
-	if b.activeRoom != "" {
-		b.roomMu.Unlock()
-		slog.Info("ignoring invite, already active in a room", "active_room", b.activeRoom, "invited_room", evt.RoomID)
+	activeRoom := b.activeRoom
+	multiRoom := b.cfg.MultiRoom
+	b.roomMu.Unlock()
+	if !multiRoom && activeRoom != "" {
+		slog.Info("ignoring invite, already active in a room", "active_room", activeRoom, "invited_room", evt.RoomID)
 
 		return
 	}
-	b.roomMu.Unlock()
 
 	slog.Info("accepting invite", "sender", evt.Sender, "room", evt.RoomID)
 
@@ -473,7 +475,9 @@ func (b *Backend) handleInvite(ctx context.Context, evt *event.Event) {
 	}
 
 	b.roomMu.Lock()
-	b.activeRoom = string(evt.RoomID)
+	if b.activeRoom == "" {
+		b.activeRoom = string(evt.RoomID)
+	}
 	b.roomMu.Unlock()
 }
 

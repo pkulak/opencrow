@@ -298,6 +298,7 @@ func createMatrixBackend(cfg *Config, handler backend.MessageHandler, onRoomClea
 		PickleKey:      cfg.Matrix.PickleKey,
 		CryptoDBPath:   cfg.Matrix.CryptoDBPath,
 		SessionBaseDir: cfg.Pi.SessionDir,
+		MultiRoom:      cfg.Pi.DefaultRoomID != "",
 	}
 
 	b, err := matrix.New(matrixCfg, handler)
