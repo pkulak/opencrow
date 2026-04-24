@@ -121,6 +121,51 @@ func TestResolveConversationID(t *testing.T) {
 	}
 }
 
+// processPrompt with a pi reply containing <send-to> routes the message to
+// the specified room and strips the tag.
+func TestWorker_ProcessPrompt_SendTo(t *testing.T) {
+	t.Parallel()
+
+	w := newFakePiWorker(t)
+
+	mb := &mockBackend{markdownFlavor: backend.MarkdownNone}
+	w.SetBackend(mb)
+
+	ctx := t.Context()
+	db := newTestDBAt(ctx, t, t.TempDir()+"/test.db")
+	inbox := newTestInboxWithDB(ctx, t, db)
+
+	app := NewApp(mb, w, inbox, db)
+	w.SetApp(app)
+
+	item := Inbox{
+		Source:         sourceUser,
+		Content:        "send-to-test",
+		ConversationID: "!source:matrix.org",
+		ReplyTo:        "reply-event-id",
+	}
+
+	w.processPrompt(ctx, item)
+
+	mb.mu.Lock()
+	defer mb.mu.Unlock()
+
+	if len(mb.sentMessages) != 1 {
+		t.Fatalf("sent %d messages, want 1", len(mb.sentMessages))
+	}
+
+	msg := mb.sentMessages[0]
+	if msg.conversationID != "!other:matrix.org" {
+		t.Errorf("sent to %q, want %q", msg.conversationID, "!other:matrix.org")
+	}
+	if strings.Contains(msg.text, "<send-to>") {
+		t.Errorf("reply still contains <send-to> tag: %q", msg.text)
+	}
+	if msg.text != "Hello from other room" {
+		t.Errorf("text = %q, want %q", msg.text, "Hello from other room")
+	}
+}
+
 // Regression for the "No active session to compact" bug seen on eve:
 // pi was spawned with exec.CommandContext bound to the per-item ctx,
 // which is cancelled the moment processItem returns. Go's CommandContext

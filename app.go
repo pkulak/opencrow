@@ -15,6 +15,7 @@ import (
 )
 
 var sendFileRe = regexp.MustCompile(`<sendfile>\s*(.*?)\s*</sendfile>`)
+var sendToRe = regexp.MustCompile(`<send-to>\s*(.*?)\s*</send-to>`)
 
 // extractSendFiles finds all <sendfile>/path</sendfile> tags in text,
 // returns the cleaned text with tags stripped and the list of file paths.
@@ -37,6 +38,22 @@ func extractSendFiles(text string) (string, []string) {
 	cleaned = strings.TrimSpace(cleaned)
 
 	return cleaned, paths
+}
+
+// extractSendTo finds a <send-to>room-id</send-to> tag in text,
+// returns the cleaned text with the tag stripped and the target room ID.
+// If multiple tags are present, the first one wins.
+func extractSendTo(text string) (string, string) {
+	match := sendToRe.FindStringSubmatch(text)
+	if match == nil {
+		return text, ""
+	}
+
+	roomID := strings.TrimSpace(match[1])
+	cleaned := sendToRe.ReplaceAllString(text, "")
+	cleaned = strings.TrimSpace(cleaned)
+
+	return cleaned, roomID
 }
 
 // App orchestrates the business logic: command handling, inbox enqueueing,

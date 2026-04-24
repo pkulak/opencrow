@@ -344,7 +344,16 @@ func (w *Worker) processPrompt(ctx context.Context, item Inbox) bool {
 		reply += fmt.Sprintf("\n\n⏱ %s", time.Since(taskStart).Round(time.Millisecond))
 	}
 
-	w.app.sendReplyWithFiles(ctx, convID, reply, item.ReplyTo)
+	reply, targetRoom := extractSendTo(reply)
+	replyToID := item.ReplyTo
+	if targetRoom != "" {
+		convID = targetRoom
+		if targetRoom != item.ConversationID {
+			replyToID = ""
+		}
+	}
+
+	w.app.sendReplyWithFiles(ctx, convID, reply, replyToID)
 
 	return false
 }

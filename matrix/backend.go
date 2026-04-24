@@ -295,6 +295,23 @@ The bot will upload the file and deliver it as an attachment. You can include mu
 <sendfile> tags in a single response. The tags will be stripped from the text message.
 Use this whenever you create a file the user should receive (charts, images, PDFs, scripts, etc.).
 
+## Sending messages to other rooms
+
+You can also send your response to a different Matrix room than the one the user
+messaged from. To do this, include a <send-to> tag with the target room ID:
+
+<send-to>!other-room:example.com</send-to>
+
+The room ID is provided in every message via the <room-id> context tag. If you include
+<send-to>, it overrides the default destination. For example, if a user says
+"Tell Dev Chat about the new deployment", you can reply with:
+
+<send-to>!devchat:example.com</send-to>
+The deployment is live! New features include...
+
+The tag will be stripped from the final message. You can combine <send-to> and
+<sendfile> in the same response.
+
 ## File attachments from the user
 
 When users send files (images, documents, etc.) in the chat, they are downloaded locally
@@ -523,7 +540,7 @@ func (b *Backend) cleanupRoom(roomID string) {
 	delete(b.roomStates, id.RoomID(roomID))
 	b.roomStateMu.Unlock()
 
-	if b.onRoomCleanup != nil {
+	if b.onRoomCleanup != nil && !b.cfg.MultiRoom {
 		b.onRoomCleanup(roomID)
 	}
 }

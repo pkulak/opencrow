@@ -118,6 +118,38 @@ func sendCommand(app *App, command string) {
 // Each case only differs in the input command and what substrings the
 // reply must contain, so a table avoids repeating the setup/assert
 // boilerplate five times.
+func TestExtractSendTo(t *testing.T) {
+	t.Parallel()
+
+	cases := []struct {
+		name       string
+		input      string
+		wantClean  string
+		wantRoom   string
+	}{
+		{"no tag", "hello world", "hello world", ""},
+		{"simple tag", "<send-to>!other:matrix.org</send-to>Hello", "Hello", "!other:matrix.org"},
+		{"whitespace around room", "<send-to>  !devchat:matrix.org  </send-to>\nHi", "Hi", "!devchat:matrix.org"},
+		{"multiple tags", "<send-to>!first:matrix.org</send-to>\n<send-to>!second:matrix.org</send-to>Text", "Text", "!first:matrix.org"},
+		{"empty tag", "<send-to>  </send-to>Text", "Text", ""},
+		{"tag in middle", "Start\n<send-to>!room:matrix.org</send-to>\nEnd", "Start\n\nEnd", "!room:matrix.org"},
+		{"combined with sendfile", "<send-to>!room:matrix.org</send-to>\n<sendfile>/x</sendfile>Text", "<sendfile>/x</sendfile>Text", "!room:matrix.org"},
+	}
+
+	for _, tc := range cases {
+		t.Run(tc.name, func(t *testing.T) {
+			t.Parallel()
+			gotClean, gotRoom := extractSendTo(tc.input)
+			if gotClean != tc.wantClean {
+				t.Errorf("clean = %q, want %q", gotClean, tc.wantClean)
+			}
+			if gotRoom != tc.wantRoom {
+				t.Errorf("room = %q, want %q", gotRoom, tc.wantRoom)
+			}
+		})
+	}
+}
+
 func TestApp_Commands(t *testing.T) {
 	t.Parallel()
 

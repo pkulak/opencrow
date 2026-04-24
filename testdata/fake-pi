@@ -15,6 +15,16 @@ while IFS= read -r line; do
           printf '%s' "$!" > "$OPENCROW_SESSION_DIR/child.pid"
           ;;
       esac
+      # Return <send-to> in the assistant reply when the prompt contains
+      # "send-to-test".
+      case "$line" in
+        *send-to-test*)
+          printf '%s\n' '{"type":"response","command":"prompt","success":true}'
+          printf '%s\n' '{"type":"agent_start"}'
+          printf '%s\n' '{"type":"agent_end","messages":[{"role":"assistant","content":[{"type":"text","text":"<send-to>!other:matrix.org</send-to>Hello from other room"}],"stopReason":"end_turn"}]}'
+          continue
+          ;;
+      esac
       printf '%s\n' '{"type":"response","command":"prompt","success":true}'
       printf '%s\n' '{"type":"agent_start"}'
       printf '%s\n' '{"type":"agent_end","messages":[{"role":"assistant","content":[{"type":"text","text":"ok"}],"stopReason":"end_turn"}]}'
