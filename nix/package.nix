@@ -15,7 +15,6 @@ buildGoModule (finalAttrs: {
       (lib.fileset.fileFilter (file: file.hasExt "sql") ./..)
       ./../.golangci.yml
       ./../testdata
-      ./../skills
       ./../SOUL.md
     ];
   };
@@ -32,7 +31,6 @@ buildGoModule (finalAttrs: {
 
   postInstall = ''
     mkdir -p $out/share/opencrow
-    cp -r skills $out/share/opencrow/skills
     cp SOUL.md $out/share/opencrow/SOUL.md
   '';
 

@@ -54,10 +54,7 @@ let
 
       skills = lib.mkOption {
         type = lib.types.attrsOf lib.types.path;
-        default = {
-          web = "${opencrowPkg}/share/opencrow/skills/web";
-        };
-        defaultText = lib.literalExpression ''{ web = "''${opencrowPkg}/share/opencrow/skills/web"; }'';
+        default = { };
         description = ''
           Skill directories to make available to pi, keyed by name. Each
           value must be a path to a directory containing a SKILL.md file.
@@ -66,7 +63,6 @@ let
         '';
         example = lib.literalExpression ''
           {
-            web = "''${opencrowPkg}/share/opencrow/skills/web";
             my-custom-skill = ./my-custom-skill;
             kagi-search = "''${pkgs.fetchFromGitHub { owner = "someone"; repo = "pi-skills"; rev = "main"; hash = "..."; }}/kagi-search";
           }

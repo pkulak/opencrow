@@ -5,8 +5,8 @@ providing instructions and examples for specific tasks. Each skill is a director
 containing a `SKILL.md` file with a YAML frontmatter (`name`, `description`) and
 the skill's instructions.
 
-OpenCrow ships with a `web` skill (for browsing with curl/lynx) and passes it to
-pi by default.
+OpenCrow does not enable any skills by default. Add only the skill directories
+you want the agent to see.
 
 ## NixOS module
 
@@ -15,7 +15,6 @@ skill names to directories:
 
 ```nix
 services.opencrow.skills = {
-  web = "${pkgs.opencrow}/share/opencrow/skills/web";  # included by default
   kagi-search = "${mics-skills}/skills/kagi-search";
   my-custom-skill = ./skills/my-custom-skill;
 };

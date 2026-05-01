@@ -146,8 +146,6 @@ lifecycle:
 ```nix
 services.opencrow = {
   skills = {
-    # Built-in web browsing skill (included by default)
-    web = "${pkgs.opencrow}/share/opencrow/skills/web";
     # Custom skill from a local directory
     my-skill = ./skills/my-skill;
   };
