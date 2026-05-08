@@ -68,6 +68,9 @@ type Backend struct {
 	roomStateMu sync.RWMutex
 	roomStates  map[id.RoomID]*roomState
 
+	joinMu   sync.RWMutex
+	joinedAt map[id.RoomID]int64 // unix milliseconds; used to suppress pre-join timeline history
+
 	// onRoomCleanup is called when a room is cleaned up (leave/ban).
 	// Wired by the caller to kill pi processes and stop trigger pipes.
 	onRoomCleanup func(roomID string)
@@ -95,6 +98,7 @@ func New(cfg Config, handler backend.MessageHandler) (*Backend, error) {
 		userID:       id.UserID(cfg.UserID),
 		allowedUsers: cfg.AllowedUsers,
 		roomStates:   make(map[id.RoomID]*roomState),
+		joinedAt:     make(map[id.RoomID]int64),
 	}, nil
 }
 
@@ -456,8 +460,12 @@ func (b *Backend) handleMembership(ctx context.Context, evt *event.Event) {
 		b.handleInvite(ctx, evt)
 	case event.MembershipLeave, event.MembershipBan:
 		b.handleLeave(ctx, evt, mem)
-	case event.MembershipJoin, event.MembershipKnock:
-		// Intentionally ignored — no action needed for joins or knocks.
+	case event.MembershipJoin:
+		if evt.StateKey != nil && id.UserID(*evt.StateKey) == b.userID {
+			b.recordRoomJoin(evt.RoomID, eventTimestamp(evt))
+		}
+	case event.MembershipKnock:
+		// Intentionally ignored — no action needed for knocks.
 	}
 }
 
@@ -482,6 +490,11 @@ func (b *Backend) handleInvite(ctx context.Context, evt *event.Event) {
 		return
 	}
 
+	// Matrix includes a short timeline of recent history for a newly-joined
+	// room in the next sync. Remember the acceptance time so those old events
+	// don't get treated as new user messages.
+	joinCutoff := time.Now()
+
 	slog.Info("accepting invite", "sender", evt.Sender, "room", evt.RoomID)
 
 	_, err := b.client.JoinRoomByID(ctx, evt.RoomID)
@@ -490,6 +503,8 @@ func (b *Backend) handleInvite(ctx context.Context, evt *event.Event) {
 
 		return
 	}
+
+	b.recordRoomJoin(evt.RoomID, joinCutoff)
 
 	b.roomMu.Lock()
 	if b.activeRoom == "" {
@@ -540,9 +555,50 @@ func (b *Backend) cleanupRoom(roomID string) {
 	delete(b.roomStates, id.RoomID(roomID))
 	b.roomStateMu.Unlock()
 
+	b.joinMu.Lock()
+	delete(b.joinedAt, id.RoomID(roomID))
+	b.joinMu.Unlock()
+
 	if b.onRoomCleanup != nil && !b.cfg.MultiRoom {
 		b.onRoomCleanup(roomID)
 	}
+}
+
+func (b *Backend) recordRoomJoin(roomID id.RoomID, joinedAt time.Time) {
+	cutoff := joinedAt.UnixMilli()
+
+	b.joinMu.Lock()
+	defer b.joinMu.Unlock()
+
+	if b.joinedAt == nil {
+		b.joinedAt = make(map[id.RoomID]int64)
+	}
+
+	if existing, ok := b.joinedAt[roomID]; ok && existing <= cutoff {
+		return
+	}
+
+	b.joinedAt[roomID] = cutoff
+}
+
+func eventTimestamp(evt *event.Event) time.Time {
+	if evt.Timestamp == 0 {
+		return time.Now()
+	}
+
+	return time.UnixMilli(evt.Timestamp)
+}
+
+func (b *Backend) isPreJoinHistory(evt *event.Event) bool {
+	if evt.Timestamp == 0 {
+		return false
+	}
+
+	b.joinMu.RLock()
+	joinedAt, ok := b.joinedAt[evt.RoomID]
+	b.joinMu.RUnlock()
+
+	return ok && evt.Timestamp < joinedAt
 }
 
 // roomStateSnapshot is a race-free view of a cached room's state at a
@@ -708,6 +764,12 @@ func (b *Backend) filterMessage(evt *event.Event) *event.MessageEventContent {
 	}
 
 	if !backend.IsAllowed(b.allowedUsers, string(evt.Sender)) {
+		return nil
+	}
+
+	if b.isPreJoinHistory(evt) {
+		slog.Debug("dropping pre-join room history", "room", evt.RoomID, "event_id", evt.ID, "event_ts", evt.Timestamp)
+
 		return nil
 	}
 
