@@ -166,6 +166,87 @@ func TestWorker_ProcessPrompt_SendTo(t *testing.T) {
 	}
 }
 
+func TestWorker_ProcessPromptSkipsTypingForFastReply(t *testing.T) {
+	t.Parallel()
+
+	w := newFakePiWorker(t)
+
+	mb := &mockBackend{markdownFlavor: backend.MarkdownNone}
+	w.SetBackend(mb)
+
+	ctx := t.Context()
+	db := newTestDBAt(ctx, t, t.TempDir()+"/test.db")
+	inbox := newTestInboxWithDB(ctx, t, db)
+
+	app := NewApp(mb, w, inbox, db)
+	w.SetApp(app)
+
+	item := Inbox{
+		Source:         sourceUser,
+		Content:        "hello",
+		ConversationID: "!source:matrix.org",
+	}
+
+	w.processPrompt(ctx, item)
+
+	mb.mu.Lock()
+	defer mb.mu.Unlock()
+
+	if len(mb.typingCalls) != 0 {
+		t.Fatalf("typing calls = %+v, want none for fast reply", mb.typingCalls)
+	}
+}
+
+func TestWorker_DelayedTypingStartsAndClears(t *testing.T) {
+	t.Parallel()
+
+	mb := &mockBackend{}
+	w := NewWorker(nil, PiConfig{}, "", "")
+	w.SetBackend(mb)
+
+	stopTyping := w.startDelayedTyping(t.Context(), "room", 10*time.Millisecond)
+
+	got := waitForTypingCalls(t, mb, 1)
+	if got[0].conversationID != "room" || !got[0].typing {
+		t.Fatalf("first typing call = %+v, want room/true", got[0])
+	}
+
+	stopTyping(context.Background())
+
+	mb.mu.Lock()
+	got = append([]typingCall(nil), mb.typingCalls...)
+	mb.mu.Unlock()
+
+	if len(got) != 2 {
+		t.Fatalf("typing calls = %+v, want start and clear", got)
+	}
+	if got[1].conversationID != "room" || got[1].typing {
+		t.Fatalf("second typing call = %+v, want room/false", got[1])
+	}
+}
+
+func waitForTypingCalls(t *testing.T, mb *mockBackend, n int) []typingCall {
+	t.Helper()
+
+	deadline := time.Now().Add(1 * time.Second)
+
+	for {
+		mb.mu.Lock()
+		got := append([]typingCall(nil), mb.typingCalls...)
+		mb.mu.Unlock()
+
+		if len(got) >= n {
+			return got
+		}
+
+		if time.Now().After(deadline) {
+			t.Fatalf("typing calls = %+v, want at least %d", got, n)
+		}
+
+		time.Sleep(5 * time.Millisecond)
+	}
+}
+
 // Regression for the "No active session to compact" bug seen on eve:
 // pi was spawned with exec.CommandContext bound to the per-item ctx,
 // which is cancelled the moment processItem returns. Go's CommandContext

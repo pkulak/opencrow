@@ -25,6 +25,9 @@ const (
 	sourceCompact   = "compact"
 )
 
+// typingIndicatorDelay avoids flashing typing indicators for fast NO_REPLY decisions.
+const typingIndicatorDelay = 5 * time.Second
+
 // Worker owns the single pi process and drains the inbox in priority order.
 // There is exactly one worker per opencrow instance.
 type Worker struct {
@@ -316,8 +319,8 @@ func (w *Worker) processPrompt(ctx context.Context, item Inbox) bool {
 		return w.handleNoRoomID(item) //nolint:contextcheck // requeue uses context.Background intentionally
 	}
 
-	w.be.SetTyping(ctx, convID, true)
-	defer w.be.SetTyping(context.Background(), convID, false) //nolint:contextcheck // must clear typing even after preemption
+	stopTyping := w.startDelayedTyping(ctx, convID, typingIndicatorDelay)
+	defer stopTyping(context.Background()) //nolint:contextcheck // must clear typing even after preemption
 
 	taskStart := time.Now()
 
@@ -346,6 +349,7 @@ func (w *Worker) processPrompt(ctx context.Context, item Inbox) bool {
 
 	reply, targetRoom := extractSendTo(reply)
 	replyToID := item.ReplyTo
+
 	if targetRoom != "" {
 		convID = targetRoom
 		if targetRoom != item.ConversationID {
@@ -358,7 +362,64 @@ func (w *Worker) processPrompt(ctx context.Context, item Inbox) bool {
 	return false
 }
 
-// assembles the prompt for the given inbox item, injecting the current time
+// startDelayedTyping starts the backend typing indicator only if processing
+// still has not finished after delay. The returned function stops the timer
+// and clears the indicator if it was started.
+func (w *Worker) startDelayedTyping(ctx context.Context, convID string, delay time.Duration) func(context.Context) {
+	var (
+		mu      sync.Mutex
+		started bool
+		once    sync.Once
+	)
+
+	stop := make(chan struct{})
+	done := make(chan struct{})
+
+	go func() {
+		defer close(done)
+
+		timer := time.NewTimer(delay)
+		defer timer.Stop()
+
+		select {
+		case <-timer.C:
+			mu.Lock()
+			defer mu.Unlock()
+
+			select {
+			case <-stop:
+				return
+			default:
+			}
+
+			w.be.SetTyping(ctx, convID, true)
+
+			started = true
+		case <-stop:
+			return
+		case <-ctx.Done():
+			return
+		}
+	}()
+
+	return func(clearCtx context.Context) {
+		once.Do(func() {
+			close(stop)
+		})
+
+		<-done
+
+		mu.Lock()
+		shouldClear := started
+		mu.Unlock()
+
+		if shouldClear {
+			w.be.SetTyping(clearCtx, convID, false)
+		}
+	}
+}
+
+// buildPrompt assembles the prompt for the given inbox item, injecting the current time.
 func (w *Worker) buildPrompt(item Inbox) (string, bool) {
 	inner, ok := w.buildInnerPrompt(item)
 	if !ok {
@@ -562,9 +623,9 @@ func (w *Worker) stopPi() {
 // resolveConversationID determines the conversation ID for routing a reply,
 // using the first non-empty value from the priority chain:
 //
-//	1. item.ConversationID — set by the user message that created the inbox row
-//	2. DefaultRoomID — OPENCROW_MATRIX_ROOM_ID, a stable default for triggers/heartbeats
-//	3. resolveRoomID() — last user conversation captured by SetRoomID
+//  1. item.ConversationID — set by the user message that created the inbox row
+//  2. DefaultRoomID — OPENCROW_MATRIX_ROOM_ID, a stable default for triggers/heartbeats
+//  3. resolveRoomID() — last user conversation captured by SetRoomID
 func resolveConversationID(itemConvID, defaultRoomID, activeRoomID string) string {
 	if itemConvID != "" {
 		return itemConvID
