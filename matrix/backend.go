@@ -29,7 +29,10 @@ import (
 	_ "modernc.org/sqlite" // register sqlite driver for database/sql
 )
 
-const maxMessageLen = 30000
+const (
+	maxMessageLen        = 30000
+	matrixRequestTimeout = 45 * time.Second
+)
 
 // Config holds Matrix-specific configuration.
 type Config struct {
@@ -87,6 +90,7 @@ func New(cfg Config, handler backend.MessageHandler) (*Backend, error) {
 		client.DeviceID = id.DeviceID(cfg.DeviceID)
 	}
 
+	client.Client.Timeout = matrixRequestTimeout
 	client.Log = zerolog.New(zerolog.NewConsoleWriter(func(w *zerolog.ConsoleWriter) {
 		w.Out = os.Stderr
 	})).With().Timestamp().Logger().Level(zerolog.InfoLevel)
