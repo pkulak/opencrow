@@ -34,7 +34,7 @@ let
     {
       package = lib.mkOption {
         type = lib.types.package;
-        default = self.packages.${pkgs.hostPlatform.system}.opencrow;
+        default = self.packages.${pkgs.stdenv.hostPlatform.system}.opencrow;
         defaultText = lib.literalExpression "opencrow.packages.\${system}.opencrow";
         description = "The opencrow package to use.";
       };
@@ -418,7 +418,10 @@ let
       # extension package from the opencrow flake, a path is used as-is.
       resolvedExtensions = lib.mapAttrs (
         ename: value:
-        if value == true then self.packages.${pkgs.hostPlatform.system}."extension-${ename}" else value
+        if value == true then
+          self.packages.${pkgs.stdenv.hostPlatform.system}."extension-${ename}"
+        else
+          value
       ) (lib.filterAttrs (_: v: v != false) icfg.extensions);
 
       # Generate a settings.json for pi that lists declared extensions.
