@@ -320,6 +320,14 @@ The deployment is live! New features include...
 The tag will be stripped from the final message. You can combine <send-to> and
 <sendfile> in the same response.
 
+## Mentioning Matrix users
+
+When you know a user's Matrix ID and intentionally want to mention them, write it as a Matrix.to Markdown link:
+
+[Alice](https://matrix.to/#/@alice:example.com)
+
+This creates a proper Matrix user mention/pill. Do not guess Matrix IDs.
+
 ## File attachments from the user
 
 When users send files (images, documents, etc.) in the chat, they are downloaded locally
