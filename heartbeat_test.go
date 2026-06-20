@@ -58,10 +58,12 @@ func TestShouldSuppressReply(t *testing.T) {
 		{"heartbeat ok for trigger", "HEARTBEAT_OK", sourceTrigger, false},
 		{"heartbeat ok for user", "HEARTBEAT_OK", sourceUser, false},
 
-		// NO_REPLY only works for triggers and user messages.
+		// NO_REPLY only works as an exact trigger/user sentinel.
 		{"no reply for trigger", "NO_REPLY", sourceTrigger, true},
 		{"no reply for user", "NO_REPLY", sourceUser, true},
-		{"no reply in text for trigger", "nothing here NO_REPLY", sourceTrigger, true},
+		{"no reply with whitespace", "\nNO_REPLY\t", sourceUser, true},
+		{"no reply in text for trigger", "nothing here NO_REPLY", sourceTrigger, false},
+		{"no reply in user explanation", "In group chats I usually output `NO_REPLY`.", sourceUser, false},
 		{"no reply for heartbeat", "NO_REPLY", sourceHeartbeat, false},
 
 		// Normal replies are never suppressed.

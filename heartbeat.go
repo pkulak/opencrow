@@ -166,7 +166,7 @@ func shouldSuppressReply(reply, source string) bool {
 		return true
 	}
 
-	if source != sourceHeartbeat && strings.Contains(reply, "NO_REPLY") {
+	if source != sourceHeartbeat && strings.TrimSpace(reply) == "NO_REPLY" {
 		slog.Info(source + ": NO_REPLY, suppressing")
 
 		return true
