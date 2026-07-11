@@ -357,8 +357,7 @@ func formatBashCall(evt ToolCallEvent, flavor backend.MarkdownFlavor) string {
 	case backend.MarkdownFull:
 		return fmt.Sprintf("🔧\n```sh\n%s\n```", cmd)
 	case backend.MarkdownBasic:
-		// No language hint: some clients (e.g. Nostr/0xchat)
-		// render the hint literally instead of hiding it.
+		// No language hint for clients that render it literally.
 		return fmt.Sprintf("🔧\n```\n%s\n```", cmd)
 	case backend.MarkdownNone:
 		return "🔧 " + cmd

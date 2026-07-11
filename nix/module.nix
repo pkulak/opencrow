@@ -45,13 +45,6 @@ let
         example = lib.literalExpression "llm-agents.packages.\${system}.pi";
       };
 
-      signalCliPackage = lib.mkOption {
-        type = lib.types.package;
-        default = pkgs.signal-cli;
-        defaultText = lib.literalExpression "pkgs.signal-cli";
-        description = "The signal-cli package to use when OPENCROW_BACKEND is signal.";
-      };
-
       skills = lib.mkOption {
         type = lib.types.attrsOf lib.types.path;
         default = { };
@@ -138,8 +131,8 @@ let
           List of environment files containing secrets (on the host).
           Bind-mounted read-only into the container.
           Must define at minimum (across all files):
-          - For Matrix: OPENCROW_MATRIX_ACCESS_TOKEN
-          - For Nostr: OPENCROW_NOSTR_PRIVATE_KEY or OPENCROW_NOSTR_PRIVATE_KEY_FILE
+          - OPENCROW_MATRIX_ACCESS_TOKEN
+          - OPENCROW_MATRIX_USER_ID
           - ANTHROPIC_API_KEY (or the appropriate key for your provider)
         '';
       };
@@ -155,7 +148,7 @@ let
           $CREDENTIALS_DIRECTORY/<name>.
         '';
         example = lib.literalExpression ''
-          { "nostr-private-key" = config.clan.core.vars.generators.opencrow.files.nostr-private-key.path; }
+          { "custom-secret" = /run/secrets/custom-secret; }
         '';
       };
 
@@ -187,20 +180,10 @@ let
           freeformType = lib.types.attrsOf lib.types.str;
 
           options = {
-            OPENCROW_BACKEND = lib.mkOption {
-              type = lib.types.enum [
-                "matrix"
-                "nostr"
-                "signal"
-              ];
-              default = "matrix";
-              description = "Messaging backend to use.";
-            };
-
             OPENCROW_MATRIX_HOMESERVER = lib.mkOption {
               type = lib.types.str;
               default = "";
-              description = "Matrix homeserver URL. Required when backend is matrix.";
+              description = "Matrix homeserver URL. Required.";
               example = "https://matrix.example.com";
             };
 
@@ -208,93 +191,6 @@ let
               type = lib.types.str;
               default = "";
               description = "Matrix device ID.";
-            };
-
-            OPENCROW_SIGNAL_ACCOUNT = lib.mkOption {
-              type = lib.types.str;
-              default = "";
-              description = "Signal account identifier for signal-cli. Required when backend is signal.";
-              example = "+12025550123";
-            };
-
-            OPENCROW_SIGNAL_CLI_BINARY = lib.mkOption {
-              type = lib.types.str;
-              default = lib.getExe config.signalCliPackage;
-              defaultText = lib.literalExpression "lib.getExe config.services.opencrow.signalCliPackage";
-              description = "Path to the signal-cli binary.";
-            };
-
-            OPENCROW_SIGNAL_CONFIG_DIR = lib.mkOption {
-              type = lib.types.str;
-              default = "${stateDir}/signal-cli";
-              description = "Directory where signal-cli stores account data and downloaded attachments.";
-            };
-
-            OPENCROW_SIGNAL_SOCKET_PATH = lib.mkOption {
-              type = lib.types.str;
-              default = "${stateDir}/signal-cli/opencrow-jsonrpc.sock";
-              description = "Unix socket path used by signal-cli daemon JSON-RPC.";
-            };
-
-            OPENCROW_NOSTR_RELAYS = lib.mkOption {
-              type = lib.types.str;
-              default = "";
-              description = "Comma-separated Nostr relay WebSocket URLs. Required when backend is nostr.";
-              example = "wss://relay.damus.io,wss://nos.lol";
-            };
-
-            OPENCROW_NOSTR_DM_RELAYS = lib.mkOption {
-              type = lib.types.str;
-              default = "";
-              description = ''
-                Comma-separated relay URLs to advertise in the bot's NIP-17 DM relay
-                list (kind 10050). Only list relays that accept kind 1059 gift wraps.
-                If empty, falls back to OPENCROW_NOSTR_RELAYS.
-              '';
-              example = "wss://relay.damus.io,wss://nos.lol";
-            };
-
-            OPENCROW_NOSTR_PRIVATE_KEY_FILE = lib.mkOption {
-              type = lib.types.str;
-              default = "";
-              description = "Path to file containing Nostr private key (hex or nsec). Required when backend is nostr (unless key is in environment file).";
-            };
-
-            OPENCROW_NOSTR_BLOSSOM_SERVERS = lib.mkOption {
-              type = lib.types.str;
-              default = "";
-              description = "Comma-separated Blossom server URLs for file uploads.";
-              example = "https://blossom.nostr.build";
-            };
-
-            OPENCROW_NOSTR_ALLOWED_USERS = lib.mkOption {
-              type = lib.types.str;
-              default = "";
-              description = "Comma-separated npubs or hex pubkeys allowed to interact with the bot. Empty allows all.";
-            };
-
-            OPENCROW_NOSTR_NAME = lib.mkOption {
-              type = lib.types.str;
-              default = "";
-              description = "Bot profile name (NIP-01 kind 0 'name' field).";
-            };
-
-            OPENCROW_NOSTR_DISPLAY_NAME = lib.mkOption {
-              type = lib.types.str;
-              default = "";
-              description = "Bot profile display name (NIP-01 kind 0 'display_name' field).";
-            };
-
-            OPENCROW_NOSTR_ABOUT = lib.mkOption {
-              type = lib.types.str;
-              default = "";
-              description = "Bot profile about/bio (NIP-01 kind 0 'about' field).";
-            };
-
-            OPENCROW_NOSTR_PICTURE = lib.mkOption {
-              type = lib.types.str;
-              default = "";
-              description = "Bot profile picture URL (NIP-01 kind 0 'picture' field).";
             };
 
             OPENCROW_PI_PROVIDER = lib.mkOption {
@@ -442,49 +338,16 @@ let
           ${lib.getExe icfg.piPackage} "$@"
       '';
 
-      # Host-side wrapper to run signal-cli inside the container as the opencrow user.
-      # Needed for account setup: register, verify, link, etc.
-      opencrowSignalCli = pkgs.writeShellScriptBin "${containerName}-signal-cli" ''
-        exec machinectl shell opencrow@${containerName} \
-          /run/current-system/sw/bin/env \
-            HOME=${stateDir} \
-          ${lib.getExe icfg.signalCliPackage} \
-            --config ${icfg.environment.OPENCROW_SIGNAL_CONFIG_DIR} \
-            "$@"
-      '';
     in
     {
       assertions = [
         {
-          assertion =
-            icfg.environment.OPENCROW_BACKEND != "matrix" || icfg.environment.OPENCROW_MATRIX_HOMESERVER != "";
-          message = "services.opencrow (${name}): OPENCROW_MATRIX_HOMESERVER is required when OPENCROW_BACKEND is matrix.";
-        }
-        {
-          assertion =
-            icfg.environment.OPENCROW_BACKEND != "signal" || icfg.environment.OPENCROW_SIGNAL_ACCOUNT != "";
-          message = "services.opencrow (${name}): OPENCROW_SIGNAL_ACCOUNT is required when OPENCROW_BACKEND is signal.";
-        }
-        {
-          assertion =
-            icfg.environment.OPENCROW_BACKEND != "nostr" || icfg.environment.OPENCROW_NOSTR_RELAYS != "";
-          message = "services.opencrow (${name}): OPENCROW_NOSTR_RELAYS is required when OPENCROW_BACKEND is nostr.";
-        }
-        {
-          assertion =
-            icfg.environment.OPENCROW_BACKEND != "nostr"
-            || icfg.environment.OPENCROW_NOSTR_PRIVATE_KEY_FILE != ""
-            # Key may also be provided via environmentFiles or credentialFiles
-            || (builtins.length icfg.environmentFiles) > 0
-            || icfg.credentialFiles != { };
-          message = "services.opencrow (${name}): OPENCROW_NOSTR_PRIVATE_KEY_FILE, environmentFiles, or credentialFiles is required when OPENCROW_BACKEND is nostr.";
+          assertion = icfg.environment.OPENCROW_MATRIX_HOMESERVER != "";
+          message = "services.opencrow (${name}): OPENCROW_MATRIX_HOMESERVER is required.";
         }
       ];
 
-      systemPackages = [
-        opencrowPi
-      ]
-      ++ lib.optional (icfg.environment.OPENCROW_BACKEND == "signal") opencrowSignalCli;
+      systemPackages = [ opencrowPi ];
 
       # The opencrow user only exists inside the container, not on the host,
       # so we cannot reference it in host-side tmpfiles rules (systemd-tmpfiles
@@ -555,7 +418,7 @@ let
             ) "L+ ${icfg.environment.PI_CODING_AGENT_DIR}/models.json - - - - ${piModelsJson}";
 
             systemd.services.opencrow = {
-              description = "OpenCrow Messaging Bot (${name})";
+              description = "OpenCrow Matrix Bot (${name})";
               wantedBy = [ "multi-user.target" ];
               after = [ "network-online.target" ];
               wants = [ "network-online.target" ];
@@ -566,7 +429,6 @@ let
                 pkgs.bash
                 pkgs.coreutils
               ]
-              ++ lib.optional (icfg.environment.OPENCROW_BACKEND == "signal") icfg.signalCliPackage
               ++ icfg.extraPackages;
 
               environment = {
@@ -597,7 +459,6 @@ let
               opencrowPkg
               icfg.piPackage
             ]
-            ++ lib.optional (icfg.environment.OPENCROW_BACKEND == "signal") icfg.signalCliPackage
             ++ icfg.extraPackages;
           };
       };
@@ -617,16 +478,13 @@ in
           instances = lib.mkOption {
             type = lib.types.attrsOf (lib.types.submodule instanceModule);
             default = { };
-            description = "Named OpenCrow messaging bot instances. Each instance runs in its own container.";
+            description = "Named OpenCrow Matrix bot instances. Each instance runs in its own container.";
             example = lib.literalExpression ''
               {
                 mybot = {
                   enable = true;
                   piPackage = llm-agents.packages.''${system}.pi;
-                  environment = {
-                    OPENCROW_BACKEND = "nostr";
-                    OPENCROW_NOSTR_RELAYS = "wss://relay.damus.io";
-                  };
+                  environment.OPENCROW_MATRIX_HOMESERVER = "https://matrix.example.com";
                 };
               }
             '';
@@ -640,7 +498,7 @@ in
     );
     default = { };
     description = ''
-      OpenCrow messaging bot configuration. Use `enable` and the top-level
+      OpenCrow Matrix bot configuration. Use `enable` and the top-level
       options for a single default instance, or `instances.<name>` for
       multiple named instances with independent containers and data.
     '';

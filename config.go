@@ -1,30 +1,18 @@
 package main
 
 import (
-	"cmp"
 	"errors"
 	"fmt"
 	"os"
 	"path/filepath"
 	"strings"
 	"time"
-
-	nostrkeys "github.com/pinpox/opencrow/nostr"
-)
-
-const (
-	backendMatrix = "matrix"
-	backendNostr  = "nostr"
-	backendSignal = "signal"
 )
 
 type Config struct {
-	BackendType string // backendMatrix, backendNostr, or backendSignal
-	Matrix      MatrixConfig
-	Nostr       NostrConfig
-	Signal      SignalConfig
-	Pi          PiConfig
-	Heartbeat   HeartbeatConfig
+	Matrix    MatrixConfig
+	Pi        PiConfig
+	Heartbeat HeartbeatConfig
 }
 
 type HeartbeatConfig struct {
@@ -40,26 +28,6 @@ type MatrixConfig struct {
 	AllowedUsers map[string]struct{}
 	PickleKey    string
 	CryptoDBPath string
-}
-
-type SignalConfig struct {
-	Account      string
-	BinaryPath   string
-	ConfigDir    string
-	SocketPath   string
-	AllowedUsers map[string]struct{}
-}
-
-type NostrConfig struct {
-	PrivateKey     string              // hex secret key (resolved from file or env)
-	Relays         []string            // OPENCROW_NOSTR_RELAYS
-	DMRelays       []string            // OPENCROW_NOSTR_DM_RELAYS (published in kind 10050; defaults to Relays)
-	BlossomServers []string            // OPENCROW_NOSTR_BLOSSOM_SERVERS
-	AllowedUsers   map[string]struct{} // OPENCROW_NOSTR_ALLOWED_USERS (hex pubkeys)
-	Name           string              // OPENCROW_NOSTR_NAME (kind 0 "name")
-	DisplayName    string              // OPENCROW_NOSTR_DISPLAY_NAME (kind 0 "display_name")
-	About          string              // OPENCROW_NOSTR_ABOUT (kind 0 "about")
-	Picture        string              // OPENCROW_NOSTR_PICTURE (kind 0 "picture" URL)
 }
 
 type PiConfig struct {
@@ -96,13 +64,9 @@ func LoadConfig() (*Config, error) {
 // allowing tests to supply isolated environments without mutating os state.
 func loadConfig(getenv func(string) string) (*Config, error) {
 	env := envReader{getenv: getenv}
-	backendType := env.or("OPENCROW_BACKEND", backendMatrix)
 
-	switch backendType {
-	case backendMatrix, backendNostr, backendSignal:
-		// valid
-	default:
-		return nil, fmt.Errorf("OPENCROW_BACKEND=%q is not supported (valid: matrix, nostr, signal)", backendType)
+	if backendType := env.str("OPENCROW_BACKEND"); backendType != "" && backendType != "matrix" {
+		return nil, fmt.Errorf("OPENCROW_BACKEND=%q is not supported; OpenCrow only supports Matrix", backendType)
 	}
 
 	idleTimeout, err := env.duration("OPENCROW_PI_IDLE_TIMEOUT", 30*time.Minute)
@@ -120,7 +84,6 @@ func loadConfig(getenv func(string) string) (*Config, error) {
 	}
 
 	cfg := &Config{
-		BackendType: backendType,
 		Matrix: MatrixConfig{
 			Homeserver:   env.str("OPENCROW_MATRIX_HOMESERVER"),
 			UserID:       env.str("OPENCROW_MATRIX_USER_ID"),
@@ -130,7 +93,6 @@ func loadConfig(getenv func(string) string) (*Config, error) {
 			PickleKey:    env.or("OPENCROW_MATRIX_PICKLE_KEY", "opencrow-default-pickle-key"),
 			CryptoDBPath: env.or("OPENCROW_MATRIX_CRYPTO_DB", filepath.Join(workingDir, "crypto.db")),
 		},
-		Signal: loadSignalConfig(env, workingDir, allowedUsers),
 		Pi: PiConfig{
 			BinaryPath:    env.or("OPENCROW_PI_BINARY", "pi"),
 			SessionDir:    env.or("OPENCROW_PI_SESSION_DIR", "/var/lib/opencrow/sessions"),
@@ -150,29 +112,11 @@ func loadConfig(getenv func(string) string) (*Config, error) {
 		},
 	}
 
-	if err := cfg.validateBackend(env); err != nil {
+	if err := cfg.Matrix.validate(); err != nil {
 		return nil, err
 	}
 
 	return cfg, nil
-}
-
-func (cfg *Config) validateBackend(env envReader) error {
-	switch cfg.BackendType {
-	case backendMatrix:
-		return cfg.Matrix.validate()
-	case backendNostr:
-		nostrCfg, err := loadNostrConfig(env)
-		if err != nil {
-			return err
-		}
-
-		cfg.Nostr = nostrCfg
-	case backendSignal:
-		return cfg.Signal.validate()
-	}
-
-	return nil
 }
 
 func (m MatrixConfig) validate() error {
@@ -180,24 +124,6 @@ func (m MatrixConfig) validate() error {
 		requireField(m.Homeserver, "OPENCROW_MATRIX_HOMESERVER"),
 		requireField(m.UserID, "OPENCROW_MATRIX_USER_ID"),
 		requireField(m.AccessToken, "OPENCROW_MATRIX_ACCESS_TOKEN"),
-	)
-}
-
-func loadSignalConfig(env envReader, workingDir string, allowedUsers map[string]struct{}) SignalConfig {
-	return SignalConfig{
-		Account:      env.str("OPENCROW_SIGNAL_ACCOUNT"),
-		BinaryPath:   env.or("OPENCROW_SIGNAL_CLI_BINARY", "signal-cli"),
-		ConfigDir:    env.or("OPENCROW_SIGNAL_CONFIG_DIR", filepath.Join(workingDir, "signal-cli")),
-		SocketPath:   env.or("OPENCROW_SIGNAL_SOCKET_PATH", filepath.Join(workingDir, "signal-cli", "opencrow-jsonrpc.sock")),
-		AllowedUsers: allowedUsers,
-	}
-}
-
-func (s SignalConfig) validate() error {
-	return errors.Join(
-		requireField(s.Account, "OPENCROW_SIGNAL_ACCOUNT"),
-		requireField(s.BinaryPath, "OPENCROW_SIGNAL_CLI_BINARY"),
-		requireField(s.SocketPath, "OPENCROW_SIGNAL_SOCKET_PATH"),
 	)
 }
 
@@ -321,7 +247,7 @@ func loadSoul(env envReader) string {
 	return env.or("OPENCROW_PI_SYSTEM_PROMPT", defaultSoul)
 }
 
-const defaultSoul = `You are OpenCrow, an AI assistant communicating via a messaging platform.
+const defaultSoul = `You are OpenCrow, an AI assistant communicating via Matrix.
 
 Be genuinely helpful, not performatively helpful. Skip the filler words — just help.
 Have opinions. Be resourceful before asking. Earn trust through competence.
@@ -347,74 +273,6 @@ const defaultHeartbeatPrompt = `Run through the standing checks below.
 If nothing needs attention, reply with exactly: HEARTBEAT_OK`
 
 const defaultTriggerPrompt = `External trigger received.`
-
-func loadNostrConfig(env envReader) (NostrConfig, error) {
-	privateKey, err := loadNostrPrivateKey(env)
-	if err != nil {
-		return NostrConfig{}, err
-	}
-
-	relays := env.list("OPENCROW_NOSTR_RELAYS")
-	if len(relays) == 0 {
-		return NostrConfig{}, errors.New("OPENCROW_NOSTR_RELAYS is required (comma-separated relay URLs)")
-	}
-
-	allowedUsers, err := parseNostrAllowedUsers(env.list("OPENCROW_NOSTR_ALLOWED_USERS"))
-	if err != nil {
-		return NostrConfig{}, err
-	}
-
-	return NostrConfig{
-		PrivateKey:     privateKey,
-		Relays:         relays,
-		DMRelays:       env.list("OPENCROW_NOSTR_DM_RELAYS"),
-		BlossomServers: env.list("OPENCROW_NOSTR_BLOSSOM_SERVERS"),
-		AllowedUsers:   allowedUsers,
-		Name:           env.str("OPENCROW_NOSTR_NAME"),
-		DisplayName:    env.str("OPENCROW_NOSTR_DISPLAY_NAME"),
-		About:          env.str("OPENCROW_NOSTR_ABOUT"),
-		Picture:        env.str("OPENCROW_NOSTR_PICTURE"),
-	}, nil
-}
-
-func loadNostrPrivateKey(env envReader) (string, error) {
-	var raw string
-
-	if path := env.str("OPENCROW_NOSTR_PRIVATE_KEY_FILE"); path != "" {
-		data, err := os.ReadFile(path)
-		if err != nil {
-			return "", fmt.Errorf("reading OPENCROW_NOSTR_PRIVATE_KEY_FILE: %w", err)
-		}
-
-		raw = strings.TrimSpace(string(data))
-	}
-
-	if raw = cmp.Or(raw, env.str("OPENCROW_NOSTR_PRIVATE_KEY")); raw == "" {
-		return "", errors.New("OPENCROW_NOSTR_PRIVATE_KEY or OPENCROW_NOSTR_PRIVATE_KEY_FILE is required")
-	}
-
-	hex, err := nostrkeys.DecodeNsecToHex(raw)
-	if err != nil {
-		return "", fmt.Errorf("decoding nostr private key: %w", err)
-	}
-
-	return hex, nil
-}
-
-func parseNostrAllowedUsers(raw []string) (map[string]struct{}, error) {
-	users := make(map[string]struct{})
-
-	for _, u := range raw {
-		hex, err := nostrkeys.DecodeNpubToHex(u)
-		if err != nil {
-			return nil, fmt.Errorf("decoding nostr allowed user: %w", err)
-		}
-
-		users[hex] = struct{}{}
-	}
-
-	return users, nil
-}
 
 func parseCommaSeparated(s string) []string {
 	if s == "" {

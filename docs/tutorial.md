@@ -182,30 +182,4 @@ to you — read files, run commands, search the web — before asking the user.
 Beyond the basics: curl, jq, ripgrep, fd, git, python3, w3m
 ```
 
-## Using Nostr instead
-
-To use Nostr as the messaging backend, swap the Matrix environment variables
-for Nostr ones:
-
-```nix
-services.opencrow.environment = {
-  OPENCROW_BACKEND = "nostr";
-  OPENCROW_NOSTR_RELAYS = "wss://nos.lol,wss://relay.damus.io";
-  OPENCROW_NOSTR_DM_RELAYS = "wss://nos.lol,wss://relay.damus.io";
-  OPENCROW_NOSTR_BLOSSOM_SERVERS = "https://blossom.nostr.build";
-  OPENCROW_NOSTR_PRIVATE_KEY_FILE = "%d/nostr-private-key";
-
-  # Profile metadata (NIP-01 kind 0)
-  OPENCROW_NOSTR_NAME = "mybot";
-  OPENCROW_NOSTR_DISPLAY_NAME = "My Bot";
-  OPENCROW_NOSTR_ABOUT = "An AI assistant powered by OpenCrow";
-
-  # Restrict access (optional)
-  OPENCROW_NOSTR_ALLOWED_USERS = "npub1...";
-};
-
-# Pass the private key via credential files
-services.opencrow.credentialFiles."nostr-private-key" = /run/secrets/nostr-private-key;
-```
-
 See [Configuration](configuration.md) for the full reference.

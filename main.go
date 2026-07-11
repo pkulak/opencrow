@@ -15,8 +15,6 @@ import (
 
 	"github.com/pinpox/opencrow/backend"
 	"github.com/pinpox/opencrow/matrix"
-	nostrbackend "github.com/pinpox/opencrow/nostr"
-	signalbackend "github.com/pinpox/opencrow/signal"
 	// Register the pure-Go SQLite driver.
 	_ "modernc.org/sqlite"
 )
@@ -57,7 +55,7 @@ func run() int {
 		return 1
 	}
 
-	slog.Info("config loaded", "backend", cfg.BackendType)
+	slog.Info("matrix config loaded")
 
 	if err := os.MkdirAll(cfg.Pi.SessionDir, 0o750); err != nil {
 		slog.Error("failed to create session directory", "error", err)
@@ -100,7 +98,7 @@ func run() int {
 
 	if err := b.Run(ctx); err != nil {
 		if ctx.Err() == nil {
-			slog.Error("backend exited with error", "error", err)
+			slog.Error("matrix sync exited with error", "error", err)
 
 			exitCode = 1
 		} else {
@@ -108,7 +106,7 @@ func run() int {
 		}
 	}
 
-	// Backend may have returned without a signal (error path); ensure
+	// Matrix sync may have returned without a signal (error path); ensure
 	// the worker sees ctx.Done so the join below cannot hang.
 	cancel()
 	<-workerDone
@@ -247,14 +245,14 @@ func migrateLegacyOutbox(ctx context.Context, db *sql.DB, sessionDir string) err
 	return nil
 }
 
-// wireServices creates backend, app, and worker using two-phase init.
-func wireServices(ctx context.Context, cfg *Config, db *sql.DB, inbox *InboxStore) (backend.Backend, *Worker, error) { //nolint:ireturn // factory returns interface by design
+// wireServices creates the Matrix backend, app, and worker using two-phase init.
+func wireServices(ctx context.Context, cfg *Config, db *sql.DB, inbox *InboxStore) (backend.Backend, *Worker, error) { //nolint:ireturn // core still consumes the transport interface
 	// Phase 1: create objects with nil cross-references.
 	worker := NewWorker(inbox, cfg.Pi, cfg.Heartbeat.Prompt, defaultTriggerPrompt)
 
 	var app *App
 
-	b, err := createBackend(ctx, cfg,
+	b, err := createMatrixBackend(cfg,
 		func(ctx context.Context, msg backend.Message) { app.HandleMessage(ctx, msg) },
 		func(_ string) { worker.Restart() },
 	)
@@ -279,19 +277,6 @@ func wireServices(ctx context.Context, cfg *Config, db *sql.DB, inbox *InboxStor
 	worker.StartIdleReaper(ctx)
 
 	return b, worker, nil
-}
-
-func createBackend(ctx context.Context, cfg *Config, handler backend.MessageHandler, onRoomCleanup func(string)) (backend.Backend, error) { //nolint:ireturn // factory returns interface by design
-	switch cfg.BackendType {
-	case backendMatrix:
-		return createMatrixBackend(cfg, handler, onRoomCleanup)
-	case backendNostr:
-		return createNostrBackend(ctx, cfg, handler)
-	case backendSignal:
-		return createSignalBackend(cfg, handler)
-	default:
-		return nil, fmt.Errorf("unsupported backend type: %q", cfg.BackendType)
-	}
 }
 
 // spawnWorker runs the worker loop in a goroutine and returns a channel
@@ -342,47 +327,6 @@ func createMatrixBackend(cfg *Config, handler backend.MessageHandler, onRoomClea
 	}
 
 	b.SetRoomCleanupCallback(onRoomCleanup)
-
-	return b, nil
-}
-
-func createNostrBackend(ctx context.Context, cfg *Config, handler backend.MessageHandler) (*nostrbackend.Backend, error) {
-	nostrCfg := nostrbackend.Config{
-		PrivateKey:     cfg.Nostr.PrivateKey,
-		Relays:         cfg.Nostr.Relays,
-		DMRelays:       cfg.Nostr.DMRelays,
-		BlossomServers: cfg.Nostr.BlossomServers,
-		AllowedUsers:   cfg.Nostr.AllowedUsers,
-		SessionBaseDir: cfg.Pi.SessionDir,
-		Profile: nostrbackend.ProfileConfig{
-			Name:        cfg.Nostr.Name,
-			DisplayName: cfg.Nostr.DisplayName,
-			About:       cfg.Nostr.About,
-			Picture:     cfg.Nostr.Picture,
-		},
-	}
-
-	b, err := nostrbackend.NewBackend(ctx, nostrCfg, handler)
-	if err != nil {
-		return nil, fmt.Errorf("creating nostr backend: %w", err)
-	}
-
-	return b, nil
-}
-
-func createSignalBackend(cfg *Config, handler backend.MessageHandler) (*signalbackend.Backend, error) {
-	signalCfg := signalbackend.Config{
-		BinaryPath:   cfg.Signal.BinaryPath,
-		Account:      cfg.Signal.Account,
-		ConfigDir:    cfg.Signal.ConfigDir,
-		SocketPath:   cfg.Signal.SocketPath,
-		AllowedUsers: cfg.Signal.AllowedUsers,
-	}
-
-	b, err := signalbackend.New(signalCfg, handler)
-	if err != nil {
-		return nil, fmt.Errorf("creating signal backend: %w", err)
-	}
 
 	return b, nil
 }

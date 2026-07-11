@@ -5,33 +5,27 @@ A saner alternative to [OpenClaw](https://github.com/openclaw/openclaw).
   <img src="logo.png" width="200" alt="OpenCrow logo">
 </p>
 
-OpenCrow is a messaging bot that bridges chat messages to
+OpenCrow is a Matrix bot that bridges chat messages to
 [pi](https://github.com/badlogic/pi-mono), a coding agent with built-in tools,
 session persistence, auto-compaction, and multi-provider LLM support. Instead of
 reimplementing all of that in Go, OpenCrow spawns pi as a long-lived subprocess
 via its RPC protocol and acts as a thin bridge. By default, the bot behaves as
-a single shared agent with one session. On Matrix, setting
-`OPENCROW_MATRIX_ROOM_ID` gives triggers/heartbeats a stable default room and
-also enables multi-room invite handling, while still keeping one shared session
-across rooms and DMs.
-
-OpenCrow supports multiple messaging backends:
-- **Matrix** — E2EE chat rooms via mautrix
-- **Nostr** — NIP-17 encrypted DMs via go-nostr
-- **Signal** — Signal chats via `signal-cli`
+a single shared agent with one session. Setting `OPENCROW_MATRIX_ROOM_ID` gives
+triggers and heartbeats a stable default room and enables multi-room invite
+handling, while still keeping one shared session across rooms and DMs.
 
 ```mermaid
 graph LR
-    Transport[Matrix / Nostr / Signal] -->|message| Inbox[(Inbox)]
+    Matrix -->|message| Inbox[(Inbox)]
     Heartbeat -->|timer| Inbox
     Reminders[(reminders)] -->|due| Inbox
     Trigger["trigger.pipe"] -->|external| Inbox
     Inbox -->|dequeue| Worker -->|RPC| Pi["pi process"]
-    Pi -->|response| Worker -->|reply| Transport
+    Pi -->|response| Worker -->|reply| Matrix
 ```
 
-The Go bot receives messages from the configured backend, forwards them to the
-pi process, collects the response, and sends it back.
+The Go bot receives Matrix messages, forwards them to the pi process, collects
+the response, and sends it back.
 
 > [!WARNING]
 > There is no whitelisting, permission system, or tool filtering. Trying to bolt
@@ -43,8 +37,8 @@ pi process, collects the response, and sends it back.
 
 ## Documentation
 
-- **[Tutorial](docs/tutorial.md)** — Step-by-step NixOS deployment with Matrix (includes Nostr variant)
-- **[Configuration](docs/configuration.md)** — Environment variables, backend settings, secrets, and authentication
+- **[Tutorial](docs/tutorial.md)** — Step-by-step NixOS deployment with Matrix
+- **[Configuration](docs/configuration.md)** — Environment variables, Matrix settings, secrets, and authentication
 - **[Skills](docs/skills.md)** — Teaching the agent new capabilities via markdown instructions
 - **[Extensions](docs/extensions.md)** — TypeScript lifecycle hooks and custom tools
 - **[Heartbeat & Reminders](docs/heartbeat.md)** — Periodic checks, one-shot reminders, trigger pipes

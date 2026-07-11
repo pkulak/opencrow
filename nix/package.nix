@@ -18,7 +18,7 @@ buildGoModule (finalAttrs: {
       ./../SOUL.md
     ];
   };
-  vendorHash = "sha256-lTNMcfe8ZTKrrhIz3CZgwiU5/OKSKIoA9eIOdhqdo7w=";
+  vendorHash = "sha256-7dLGNDvxqJNAKi7woyahTU9+HWdZxKy5skkaPN9u4Kc=";
   subPackages = [ "." ];
   tags = [ "goolm" ];
 
@@ -35,7 +35,7 @@ buildGoModule (finalAttrs: {
   '';
 
   meta = {
-    description = "Messaging bot (Matrix/Nostr/Signal) bridging messages to an AI coding agent via pi RPC";
+    description = "Matrix bot bridging messages to an AI coding agent via pi RPC";
     homepage = "https://github.com/pinpox/opencrow";
     mainProgram = "opencrow";
   };

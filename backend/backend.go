@@ -1,5 +1,4 @@
-// Package backend defines the messaging transport interface that all
-// backends (Matrix, Nostr, Signal, etc.) must implement.
+// Package backend defines the messaging transport boundary used by the core.
 package backend
 
 import "context"
@@ -11,7 +10,7 @@ type Backend interface {
 	Run(ctx context.Context) error
 	// Stop signals the backend to shut down gracefully.
 	Stop()
-	// Close releases resources (crypto DB, relay connections).
+	// Close releases transport resources.
 	Close() error
 	// SendMessage sends a text message to a conversation. replyToID is an
 	// optional backend-specific message identifier; when non-empty, the
@@ -25,8 +24,7 @@ type Backend interface {
 	SendFile(ctx context.Context, conversationID string, filePath string) error
 	// SetTyping sets the typing indicator for a conversation.
 	SetTyping(ctx context.Context, conversationID string, typing bool)
-	// ResetConversation clears backend-side state for a conversation
-	// (e.g., active room tracking, active DM pubkey).
+	// ResetConversation clears transport-side state for a conversation.
 	ResetConversation(ctx context.Context, conversationID string)
 	// SystemPromptExtra returns backend-specific text to append to the
 	// system prompt.
@@ -52,7 +50,7 @@ const (
 	// MarkdownNone: no Markdown rendering; send plain text.
 	MarkdownNone MarkdownFlavor = iota
 	// MarkdownBasic: fenced code blocks and inline backticks render, but
-	// language hints on fences may leak (e.g. Nostr/0xchat).
+	// language hints on fences may leak.
 	MarkdownBasic
 	// MarkdownFull: full Markdown including language-tagged fences for
 	// syntax highlighting (e.g. Matrix/Element).
@@ -61,17 +59,17 @@ const (
 
 // Message represents a transport-agnostic inbound message.
 type Message struct {
-	ConversationID string // room ID, DM pubkey, channel ID — opaque to the core
-	SenderID       string // user ID / pubkey
+	ConversationID string // Matrix room ID — opaque to the core
+	SenderID       string // Matrix user ID
 	Text           string // message text (or synthesized "[User sent file: ...]")
 	MessageID      string // backend-specific ID of this message (used to resolve future reply-to references)
 	ReplyToID      string // backend-specific ID of the message being replied to (empty if not a reply)
 
 	// Enrichment fields — populated by backends that can provide them.
 	// All are optional; zero values are ignored when building context tags.
-	SenderName string // display name (Matrix only, for now)
-	RoomName   string // room/channel title   (Matrix only, for now)
-	RoomSize   int    // member count          (Matrix only, for now)
+	SenderName string // display name
+	RoomName   string // room title
+	RoomSize   int    // member count
 	IsDM       bool   // true = 1:1 conversation
 }
 

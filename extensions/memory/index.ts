@@ -220,7 +220,7 @@ claim or a recalled memory — that creates a feedback loop.
 
 SUBJECT is a short stable key (2–6 words, lowercase) used to supersede
 earlier entries about the same thing — e.g. "calendar tool",
-"commute route", "n8n workflow caldav→nostr".
+"commute route", "n8n workflow caldav→matrix".
 
 BODY is one concise sentence or command. No code fences.
 

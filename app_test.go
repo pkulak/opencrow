@@ -653,7 +653,7 @@ func TestApp_SystemPrompt(t *testing.T) {
 		extra string
 		want  string
 	}{
-		{"with extra", "You are in a Nostr DM.", "Base prompt\n\nYou are in a Nostr DM."},
+		{"with extra", "Matrix room context.", "Base prompt\n\nMatrix room context."},
 		{"no extra", "", "Base prompt"},
 	}
 
