@@ -215,6 +215,16 @@ func (b *Backend) SendMessage(ctx context.Context, conversationID string, text s
 	return lastEventID
 }
 
+// SendReaction sends an annotation reaction to a Matrix event.
+func (b *Backend) SendReaction(ctx context.Context, conversationID, messageID, emoji string) error {
+	_, err := b.client.SendReaction(ctx, id.RoomID(conversationID), id.EventID(messageID), emoji)
+	if err != nil {
+		return fmt.Errorf("sending reaction: %w", err)
+	}
+
+	return nil
+}
+
 // SendFile uploads and sends a file to a Matrix room.
 func (b *Backend) SendFile(ctx context.Context, conversationID string, filePath string) error {
 	roomID := id.RoomID(conversationID)
@@ -291,6 +301,19 @@ func (b *Backend) ResetConversation(_ context.Context, conversationID string) {
 // SystemPromptExtra returns Matrix-specific system prompt context.
 func (b *Backend) SystemPromptExtra() string {
 	return `You are living in a Matrix chat room.
+
+## Reacting to messages
+
+Incoming user messages include a <message-id> context tag. To react to a message
+in the current room, include one standalone tag in your final response:
+
+<react id="$event-id">👍</react>
+
+Copy the ID exactly from a <message-id> tag; never invent one, and put only the
+reaction emoji inside the tag. Use at most one <react> tag per response. The tag
+may accompany a text reply or be the entire response, and will be stripped before
+delivery. Reactions apply to the current room even when the response also contains
+<send-to>.
 
 ## Sending files to the user
 

@@ -14,8 +14,47 @@ import (
 	"github.com/pinpox/opencrow/backend"
 )
 
-var sendFileRe = regexp.MustCompile(`<sendfile>\s*(.*?)\s*</sendfile>`)
-var sendToRe = regexp.MustCompile(`<send-to>\s*(.*?)\s*</send-to>`)
+var (
+	sendFileRe = regexp.MustCompile(`<sendfile>\s*(.*?)\s*</sendfile>`)
+	sendToRe   = regexp.MustCompile(`<send-to>\s*(.*?)\s*</send-to>`)
+	reactRe    = regexp.MustCompile(`(?m)^[\t ]*<react[\t ]+id="([^"\r\n]+)">([^\r\n]*)</react>[\t ]*$`)
+)
+
+const maxReactionBytes = 64
+
+type reactionRequest struct {
+	messageID string
+	emoji     string
+}
+
+// extractReaction finds standalone <react> control tags, strips all of them,
+// and returns the first valid request. Requiring a complete standalone line
+// reduces accidental activation when the syntax is mentioned in prose.
+func extractReaction(text string) (string, *reactionRequest) {
+	matches := reactRe.FindAllStringSubmatch(text, -1)
+	if len(matches) == 0 {
+		return text, nil
+	}
+
+	if len(matches) > 1 {
+		slog.Warn("multiple reaction tags in agent response; using first valid tag", "count", len(matches))
+	}
+
+	var reaction *reactionRequest
+
+	for _, match := range matches {
+		messageID := strings.TrimSpace(html.UnescapeString(match[1]))
+		emoji := strings.TrimSpace(html.UnescapeString(match[2]))
+
+		if reaction == nil && messageID != "" && emoji != "" && len(emoji) <= maxReactionBytes {
+			reaction = &reactionRequest{messageID: messageID, emoji: emoji}
+		}
+	}
+
+	cleaned := reactRe.ReplaceAllString(text, "")
+
+	return strings.TrimSpace(cleaned), reaction
+}
 
 // extractSendFiles finds all <sendfile>/path</sendfile> tags in text,
 // returns the cleaned text with tags stripped and the list of file paths.
@@ -98,6 +137,12 @@ func (a *App) HandleMessage(ctx context.Context, msg backend.Message) {
 	}
 }
 
+func (a *App) supportsReactions() bool {
+	_, ok := a.backend.(backend.ReactionSender)
+
+	return ok
+}
+
 func (a *App) handleHelp(ctx context.Context, msg backend.Message) {
 	help := "Available commands:\n" +
 		"  !help    — Show this help message\n" +
@@ -178,7 +223,17 @@ func (a *App) buildPromptText(ctx context.Context, msg backend.Message) string {
 		}
 	}
 
-	if tags := buildContextTags(msg); tags != "" {
+	tags := buildContextTags(msg)
+	if a.supportsReactions() && msg.MessageID != "" {
+		messageIDTag := "<message-id>" + escape(msg.MessageID) + "</message-id>"
+		if tags == "" {
+			tags = messageIDTag
+		} else {
+			tags += "\n" + messageIDTag
+		}
+	}
+
+	if tags != "" {
 		promptText = tags + "\n\n" + promptText
 	}
 
@@ -218,6 +273,32 @@ func buildContextTags(msg backend.Message) string {
 
 func escape(s string) string {
 	return html.EscapeString(s)
+}
+
+// sendReaction validates that the requested message is known in the current
+// conversation before asking the optional backend capability to react to it.
+func (a *App) sendReaction(ctx context.Context, conversationID string, reaction reactionRequest) {
+	sender, ok := a.backend.(backend.ReactionSender)
+	if !ok {
+		return
+	}
+
+	if a.outbox.Get(ctx, conversationID, reaction.messageID) == "" {
+		slog.Warn("ignoring reaction to unknown message",
+			"conversation", conversationID,
+			"message", reaction.messageID,
+		)
+
+		return
+	}
+
+	if err := sender.SendReaction(ctx, conversationID, reaction.messageID, reaction.emoji); err != nil {
+		slog.Warn("failed to send reaction",
+			"conversation", conversationID,
+			"message", reaction.messageID,
+			"error", err,
+		)
+	}
 }
 
 // sendReplyWithFiles extracts <sendfile> tags, uploads each file, and

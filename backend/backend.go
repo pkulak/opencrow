@@ -37,6 +37,13 @@ type Backend interface {
 	MarkdownFlavor() MarkdownFlavor
 }
 
+// ReactionSender is an optional backend capability for reacting to a message.
+// The core checks for this interface before exposing reaction instructions to
+// the agent. Message IDs are scoped to conversationID.
+type ReactionSender interface {
+	SendReaction(ctx context.Context, conversationID, messageID, emoji string) error
+}
+
 // MarkdownFlavor describes the level of Markdown support a backend's clients
 // typically render.
 type MarkdownFlavor int

@@ -9,7 +9,10 @@ import (
 	"github.com/pinpox/opencrow/backend"
 )
 
-const testRoom = "!room1"
+const (
+	testRoom           = "!room1"
+	reactionSourceRoom = "!source:matrix.org"
+)
 
 // mockBackend records calls for testing.
 type mockBackend struct {
@@ -35,6 +38,27 @@ type sentFile struct {
 type typingCall struct {
 	conversationID string
 	typing         bool
+}
+
+type reactionCall struct {
+	conversationID string
+	messageID      string
+	emoji          string
+}
+
+type reactionMockBackend struct {
+	*mockBackend
+
+	reactions []reactionCall
+}
+
+func (m *reactionMockBackend) SendReaction(_ context.Context, conversationID, messageID, emoji string) error {
+	m.mu.Lock()
+	defer m.mu.Unlock()
+
+	m.reactions = append(m.reactions, reactionCall{conversationID, messageID, emoji})
+
+	return nil
 }
 
 func (m *mockBackend) Run(_ context.Context) error { return nil }
@@ -91,18 +115,23 @@ func newTestApp(t *testing.T) (*App, *mockBackend) {
 func newTestAppWithBackend(t *testing.T, mb *mockBackend) (*App, *mockBackend) {
 	t.Helper()
 
+	return newTestAppForBackend(t, mb), mb
+}
+
+func newTestAppForBackend(t *testing.T, b backend.Backend) *App {
+	t.Helper()
+
 	ctx := context.Background()
 	db := newTestDB(ctx, t)
-
 	inbox := newTestInboxWithDB(ctx, t, db)
 
 	worker := NewWorker(inbox, PiConfig{SessionDir: t.TempDir()}, "", "")
-	worker.SetBackend(mb)
+	worker.SetBackend(b)
 
-	app := NewApp(mb, worker, inbox, db)
+	app := NewApp(b, worker, inbox, db)
 	worker.SetApp(app)
 
-	return app, mb
+	return app
 }
 
 // sendCommand sends a command message from a default user to testRoom.
@@ -114,18 +143,68 @@ func sendCommand(app *App, command string) {
 	})
 }
 
-// TestApp_Commands covers the !-commands that reply with a single message.
-// Each case only differs in the input command and what substrings the
-// reply must contain, so a table avoids repeating the setup/assert
-// boilerplate five times.
+func TestExtractReaction(t *testing.T) {
+	t.Parallel()
+
+	longEmoji := strings.Repeat("x", maxReactionBytes+1)
+
+	cases := []struct {
+		name          string
+		input         string
+		wantClean     string
+		wantMessageID string
+		wantEmoji     string
+	}{
+		{"no tag", "hello", "hello", "", ""},
+		{"reaction only", `<react id="$event">👍</react>`, "", "$event", "👍"},
+		{"reaction with text", "Hello\n<react id=\"$event\"> ❤️ </react>", "Hello", "$event", "❤️"},
+		{"HTML escaped id", `<react id="$a&amp;b">👍</react>`, "", "$a&b", "👍"},
+		{"multiple uses first valid", "<react id=\"$first\">👍</react>\nText\n<react id=\"$second\">❤️</react>", "Text", "$first", "👍"},
+		{"empty emoji stripped", `<react id="$event"> </react>`, "", "", ""},
+		{"oversized emoji stripped", `<react id="$event">` + longEmoji + `</react>`, "", "", ""},
+		{"inline tag ignored", `Show <react id="$event">👍</react> literally`, `Show <react id="$event">👍</react> literally`, "", ""},
+	}
+
+	for _, tc := range cases {
+		t.Run(tc.name, func(t *testing.T) {
+			t.Parallel()
+
+			gotClean, gotReaction := extractReaction(tc.input)
+			if gotClean != tc.wantClean {
+				t.Errorf("clean = %q, want %q", gotClean, tc.wantClean)
+			}
+
+			if tc.wantMessageID == "" {
+				if gotReaction != nil {
+					t.Fatalf("reaction = %+v, want nil", gotReaction)
+				}
+
+				return
+			}
+
+			if gotReaction == nil {
+				t.Fatal("reaction is nil")
+			}
+
+			if gotReaction.messageID != tc.wantMessageID {
+				t.Errorf("messageID = %q, want %q", gotReaction.messageID, tc.wantMessageID)
+			}
+
+			if gotReaction.emoji != tc.wantEmoji {
+				t.Errorf("emoji = %q, want %q", gotReaction.emoji, tc.wantEmoji)
+			}
+		})
+	}
+}
+
 func TestExtractSendTo(t *testing.T) {
 	t.Parallel()
 
 	cases := []struct {
-		name       string
-		input      string
-		wantClean  string
-		wantRoom   string
+		name      string
+		input     string
+		wantClean string
+		wantRoom  string
 	}{
 		{"no tag", "hello world", "hello world", ""},
 		{"simple tag", "<send-to>!other:matrix.org</send-to>Hello", "Hello", "!other:matrix.org"},
@@ -139,10 +218,12 @@ func TestExtractSendTo(t *testing.T) {
 	for _, tc := range cases {
 		t.Run(tc.name, func(t *testing.T) {
 			t.Parallel()
+
 			gotClean, gotRoom := extractSendTo(tc.input)
 			if gotClean != tc.wantClean {
 				t.Errorf("clean = %q, want %q", gotClean, tc.wantClean)
 			}
+
 			if gotRoom != tc.wantRoom {
 				t.Errorf("room = %q, want %q", gotRoom, tc.wantRoom)
 			}
@@ -150,6 +231,10 @@ func TestExtractSendTo(t *testing.T) {
 	}
 }
 
+// TestApp_Commands covers the !-commands that reply with a single message.
+// Each case only differs in the input command and what substrings the
+// reply must contain, so a table avoids repeating the setup/assert
+// boilerplate five times.
 func TestApp_Commands(t *testing.T) {
 	t.Parallel()
 
@@ -311,8 +396,8 @@ func TestBuildContextTags(t *testing.T) {
 			ConversationID: "!room:matrix.org",
 			SenderID:       "@alice:matrix.org",
 			SenderName:     "Alice",
-			RoomName:      "Dev Chat",
-			RoomSize:      5,
+			RoomName:       "Dev Chat",
+			RoomSize:       5,
 			IsDM:           false,
 		}
 		got := buildContextTags(msg)
@@ -380,8 +465,8 @@ func TestBuildContextTags(t *testing.T) {
 		msg := backend.Message{
 			ConversationID: "!dm:matrix.org",
 			SenderID:       "@bob:matrix.org",
-			RoomName:      "My DM",
-			RoomSize:      2,
+			RoomName:       "My DM",
+			RoomSize:       2,
 			IsDM:           true,
 		}
 		got := buildContextTags(msg)
@@ -451,6 +536,55 @@ func TestBuildPromptText_ContextTags(t *testing.T) {
 	// Verify structure: tags block, blank line, then content.
 	if !strings.Contains(got, "\n\nhello there") {
 		t.Errorf("buildPromptText should have blank line before content, got: %q", got)
+	}
+}
+
+func TestBuildPromptText_MessageIDOnlyForReactionBackend(t *testing.T) {
+	t.Parallel()
+
+	msg := backend.Message{
+		ConversationID: "!room:matrix.org",
+		SenderID:       "@alice:matrix.org",
+		MessageID:      "$event<&>",
+		Text:           "hello",
+	}
+
+	unsupported, _ := newTestApp(t)
+	if got := unsupported.buildPromptText(context.Background(), msg); strings.Contains(got, "<message-id>") {
+		t.Errorf("unsupported backend prompt contains message-id: %q", got)
+	}
+
+	rb := &reactionMockBackend{mockBackend: &mockBackend{}}
+	supported := newTestAppForBackend(t, rb)
+
+	got := supported.buildPromptText(context.Background(), msg)
+	if !strings.Contains(got, "<message-id>$event&lt;&amp;&gt;</message-id>") {
+		t.Errorf("reaction backend prompt missing escaped message-id, got: %q", got)
+	}
+}
+
+func TestApp_SendReactionValidatesConversationAndMessage(t *testing.T) {
+	t.Parallel()
+
+	rb := &reactionMockBackend{mockBackend: &mockBackend{}}
+	app := newTestAppForBackend(t, rb)
+	ctx := context.Background()
+
+	app.outbox.Put(ctx, reactionSourceRoom, "$event", "hello")
+	app.sendReaction(ctx, reactionSourceRoom, reactionRequest{messageID: "$event", emoji: "👍"})
+	app.sendReaction(ctx, "!other:matrix.org", reactionRequest{messageID: "$event", emoji: "❤️"})
+	app.sendReaction(ctx, reactionSourceRoom, reactionRequest{messageID: "$unknown", emoji: "❤️"})
+
+	rb.mu.Lock()
+	defer rb.mu.Unlock()
+
+	if len(rb.reactions) != 1 {
+		t.Fatalf("reactions = %+v, want one", rb.reactions)
+	}
+
+	got := rb.reactions[0]
+	if got.conversationID != reactionSourceRoom || got.messageID != "$event" || got.emoji != "👍" {
+		t.Errorf("reaction = %+v", got)
 	}
 }
 

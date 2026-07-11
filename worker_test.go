@@ -141,7 +141,7 @@ func TestWorker_ProcessPrompt_SendTo(t *testing.T) {
 	item := Inbox{
 		Source:         sourceUser,
 		Content:        "send-to-test",
-		ConversationID: "!source:matrix.org",
+		ConversationID: reactionSourceRoom,
 		ReplyTo:        "reply-event-id",
 	}
 
@@ -158,11 +158,114 @@ func TestWorker_ProcessPrompt_SendTo(t *testing.T) {
 	if msg.conversationID != "!other:matrix.org" {
 		t.Errorf("sent to %q, want %q", msg.conversationID, "!other:matrix.org")
 	}
+
 	if strings.Contains(msg.text, "<send-to>") {
 		t.Errorf("reply still contains <send-to> tag: %q", msg.text)
 	}
+
 	if msg.text != "Hello from other room" {
 		t.Errorf("text = %q, want %q", msg.text, "Hello from other room")
+	}
+}
+
+func TestWorker_ProcessPrompt_ReactionOnly(t *testing.T) {
+	t.Parallel()
+
+	w := newFakePiWorker(t)
+	rb := &reactionMockBackend{mockBackend: &mockBackend{markdownFlavor: backend.MarkdownNone}}
+	w.SetBackend(rb)
+
+	ctx := t.Context()
+	db := newTestDBAt(ctx, t, t.TempDir()+"/test.db")
+	inbox := newTestInboxWithDB(ctx, t, db)
+	app := NewApp(rb, w, inbox, db)
+	w.SetApp(app)
+
+	app.outbox.Put(ctx, reactionSourceRoom, "$event-1", "hello")
+
+	w.processPrompt(ctx, Inbox{
+		Source:         sourceUser,
+		Content:        "reaction-only-test",
+		ConversationID: reactionSourceRoom,
+	})
+
+	rb.mu.Lock()
+	defer rb.mu.Unlock()
+
+	if len(rb.reactions) != 1 {
+		t.Fatalf("reactions = %+v, want one", rb.reactions)
+	}
+
+	if got := rb.reactions[0]; got.conversationID != reactionSourceRoom || got.messageID != "$event-1" || got.emoji != "👍" {
+		t.Errorf("reaction = %+v", got)
+	}
+
+	if len(rb.sentMessages) != 0 {
+		t.Errorf("sent messages = %+v, want none for reaction-only response", rb.sentMessages)
+	}
+}
+
+func TestWorker_ProcessPrompt_ReactionTagIgnoredByUnsupportedBackend(t *testing.T) {
+	t.Parallel()
+
+	w := newFakePiWorker(t)
+	mb := &mockBackend{markdownFlavor: backend.MarkdownNone}
+	w.SetBackend(mb)
+
+	ctx := t.Context()
+	db := newTestDBAt(ctx, t, t.TempDir()+"/test.db")
+	inbox := newTestInboxWithDB(ctx, t, db)
+	app := NewApp(mb, w, inbox, db)
+	w.SetApp(app)
+
+	w.processPrompt(ctx, Inbox{
+		Source:         sourceUser,
+		Content:        "reaction-only-test",
+		ConversationID: reactionSourceRoom,
+	})
+
+	mb.mu.Lock()
+	defer mb.mu.Unlock()
+
+	if len(mb.sentMessages) != 1 || mb.sentMessages[0].text != `<react id="$event-1">👍</react>` {
+		t.Errorf("sent messages = %+v, want literal tag on unsupported backend", mb.sentMessages)
+	}
+}
+
+func TestWorker_ProcessPrompt_ReactionStaysInSourceRoom(t *testing.T) {
+	t.Parallel()
+
+	w := newFakePiWorker(t)
+	rb := &reactionMockBackend{mockBackend: &mockBackend{markdownFlavor: backend.MarkdownNone}}
+	w.SetBackend(rb)
+
+	ctx := t.Context()
+	db := newTestDBAt(ctx, t, t.TempDir()+"/test.db")
+	inbox := newTestInboxWithDB(ctx, t, db)
+	app := NewApp(rb, w, inbox, db)
+	w.SetApp(app)
+
+	app.outbox.Put(ctx, reactionSourceRoom, "$event-1", "hello")
+
+	w.processPrompt(ctx, Inbox{
+		Source:         sourceUser,
+		Content:        "reaction-send-to-test",
+		ConversationID: reactionSourceRoom,
+	})
+
+	rb.mu.Lock()
+	defer rb.mu.Unlock()
+
+	if len(rb.reactions) != 1 || rb.reactions[0].conversationID != reactionSourceRoom {
+		t.Fatalf("reactions = %+v, want one in source room", rb.reactions)
+	}
+
+	if len(rb.sentMessages) != 1 || rb.sentMessages[0].conversationID != "!other:matrix.org" {
+		t.Fatalf("sent messages = %+v, want text in other room", rb.sentMessages)
+	}
+
+	if rb.sentMessages[0].text != "Hello from other room" {
+		t.Errorf("text = %q, want cleaned reply", rb.sentMessages[0].text)
 	}
 }
 
@@ -184,7 +287,7 @@ func TestWorker_ProcessPromptSkipsTypingForFastReply(t *testing.T) {
 	item := Inbox{
 		Source:         sourceUser,
 		Content:        "hello",
-		ConversationID: "!source:matrix.org",
+		ConversationID: reactionSourceRoom,
 	}
 
 	w.processPrompt(ctx, item)

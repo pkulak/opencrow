@@ -1,12 +1,74 @@
 package matrix
 
 import (
+	"context"
+	"encoding/json"
+	"net/http"
+	"net/http/httptest"
+	"strings"
 	"testing"
 	"time"
 
+	"maunium.net/go/mautrix"
 	"maunium.net/go/mautrix/event"
 	"maunium.net/go/mautrix/id"
 )
+
+func TestSendReaction(t *testing.T) {
+	t.Parallel()
+
+	type capturedRequest struct {
+		method string
+		path   string
+		body   map[string]any
+		err    error
+	}
+
+	requests := make(chan capturedRequest, 1)
+
+	server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		var body map[string]any
+
+		err := json.NewDecoder(r.Body).Decode(&body)
+		requests <- capturedRequest{method: r.Method, path: r.URL.Path, body: body, err: err}
+
+		w.Header().Set("Content-Type", "application/json")
+		_, _ = w.Write([]byte(`{"event_id":"$reaction"}`))
+	}))
+	defer server.Close()
+
+	client, err := mautrix.NewClient(server.URL, id.UserID("@bot:example.org"), "token")
+	if err != nil {
+		t.Fatal(err)
+	}
+
+	b := &Backend{client: client}
+	if err := b.SendReaction(context.Background(), "!room:example.org", "$event", "👍"); err != nil {
+		t.Fatal(err)
+	}
+
+	got := <-requests
+	if got.err != nil {
+		t.Fatalf("decoding request body: %v", got.err)
+	}
+
+	if got.method != http.MethodPut {
+		t.Errorf("method = %q, want PUT", got.method)
+	}
+
+	if !strings.Contains(got.path, "/rooms/!room:example.org/send/m.reaction/") {
+		t.Errorf("path = %q", got.path)
+	}
+
+	relatesTo, ok := got.body["m.relates_to"].(map[string]any)
+	if !ok {
+		t.Fatalf("m.relates_to = %#v", got.body["m.relates_to"])
+	}
+
+	if relatesTo["event_id"] != "$event" || relatesTo["rel_type"] != "m.annotation" || relatesTo["key"] != "👍" {
+		t.Errorf("m.relates_to = %#v", relatesTo)
+	}
+}
 
 func TestFilterMessageDropsPreJoinHistory(t *testing.T) {
 	roomID := id.RoomID("!room:example.org")

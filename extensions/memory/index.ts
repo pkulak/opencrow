@@ -72,7 +72,7 @@ const HEARTBEAT_MARKER = "Standing checks:";
 /**
  * Context tags prepended by buildPromptText (app.go) and the timestamp
  * wrapper from injectTimestamp (worker.go). These are protocol metadata —
- * sender IDs, room IDs, member counts, timestamps — that change between
+ * sender IDs, room/message IDs, member counts, timestamps — that change between
  * turns and would poison embeddings and yield stale "facts" about room
  * sizes or Matrix IDs. Kept here (not exported from Go) for the same
  * reason as the other sentinels: the extension ships as a separate Nix
@@ -80,7 +80,11 @@ const HEARTBEAT_MARKER = "Standing checks:";
  * no-op, which is the safe direction.
  */
 const CONTEXT_TAG_RE =
-  /^<(from-id|room-id|is-dm|from-name|room-name|room-size|time)>.*<\/\1>$/gm;
+  /^<(from-id|room-id|is-dm|from-name|room-name|room-size|message-id|time)>.*<\/\1>$/gm;
+
+/** Final-response control tag consumed by opencrow before chat delivery. */
+const REACTION_TAG_RE =
+  /<react[\t ]+id="[^"\r\n]+">[^\r\n]*<\/react>/g;
 
 function stripContextTags(text: string): string {
   return text
@@ -131,6 +135,9 @@ function scrubPrompt(prompt: string): string | null {
  */
 function scrubTurn(text: string): string {
   let out = text;
+
+  // Reaction markup is transport control data, not conversational content.
+  out = out.replace(REACTION_TAG_RE, "");
 
   // Unwrap the leading user prompt the same way recall does.
   const m = out.match(/^\[User\]: ([\s\S]*?)(?=\n\n\[|$)/);

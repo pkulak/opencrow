@@ -335,9 +335,7 @@ func (w *Worker) processPrompt(ctx context.Context, item Inbox) bool {
 	w.lastUse = time.Now()
 	w.mu.Unlock()
 
-	if item.Source == sourceUser && reply == "" {
-		reply = w.retryEmptyResponse(ctx, pi)
-	}
+	reply = w.prepareReply(ctx, pi, item, convID, reply)
 
 	if shouldSuppressReply(reply, item.Source) {
 		return false
@@ -360,6 +358,33 @@ func (w *Worker) processPrompt(ctx context.Context, item Inbox) bool {
 	w.app.sendReplyWithFiles(ctx, convID, reply, replyToID)
 
 	return false
+}
+
+// prepareReply extracts and applies an optional Matrix reaction, and retries a
+// genuinely empty user response. A reaction-only response is intentional
+// output and must not trigger the empty-response summary prompt.
+func (w *Worker) prepareReply(ctx context.Context, pi *PiProcess, item Inbox, convID, reply string) string {
+	if !w.app.supportsReactions() {
+		if item.Source == sourceUser && reply == "" {
+			return w.retryEmptyResponse(ctx, pi)
+		}
+
+		return reply
+	}
+
+	reply, reaction := extractReaction(reply)
+	if item.Source == sourceUser && reply == "" && reaction == nil {
+		reply = w.retryEmptyResponse(ctx, pi)
+		reply, reaction = extractReaction(reply)
+	}
+
+	// Reactions always apply to the source conversation. A later <send-to>
+	// tag may reroute the text reply, but never the reaction target.
+	if item.Source == sourceUser && reaction != nil {
+		w.app.sendReaction(ctx, convID, *reaction)
+	}
+
+	return reply
 }
 
 // startDelayedTyping starts the backend typing indicator only if processing
