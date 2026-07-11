@@ -36,21 +36,29 @@ func NewInboxStore(ctx context.Context, db *sql.DB) (*InboxStore, error) {
 	return &InboxStore{queries: queries}, nil
 }
 
-// Enqueue inserts an item into the inbox.
+// Enqueue inserts an item without backend message metadata.
 func (s *InboxStore) Enqueue(ctx context.Context, priority int64, source, content, replyTo, conversationID string) error {
-	if err := s.queries.EnqueueInbox(ctx, EnqueueInboxParams{
+	return s.enqueue(ctx, EnqueueInboxParams{
 		Priority:       priority,
 		Source:         source,
 		Content:        content,
 		ReplyTo:        replyTo,
 		ConversationID: conversationID,
-	}); err != nil {
-		return fmt.Errorf("enqueuing inbox item: %w", err)
-	}
+	})
+}
 
-	slog.Info("inbox: enqueued", "source", source, "priority", priority)
-
-	return nil
+// EnqueueUser inserts a user message with the metadata needed for
+// backend-specific processing indicators.
+func (s *InboxStore) EnqueueUser(ctx context.Context, content, replyTo, conversationID, messageID string, isGroup bool) error {
+	return s.enqueue(ctx, EnqueueInboxParams{
+		Priority:       PriorityUser,
+		Source:         sourceUser,
+		Content:        content,
+		ReplyTo:        replyTo,
+		ConversationID: conversationID,
+		MessageID:      messageID,
+		IsGroup:        isGroup,
+	})
 }
 
 // Dequeue removes and returns the highest-priority (lowest number) item.
@@ -72,14 +80,14 @@ func (s *InboxStore) Requeue(ctx context.Context, item Inbox) error {
 		Content:        item.Content,
 		ReplyTo:        item.ReplyTo,
 		ConversationID: item.ConversationID,
+		MessageID:      item.MessageID,
+		IsGroup:        item.IsGroup,
 	}); err != nil {
 		return fmt.Errorf("requeueing %s item: %w", item.Source, err)
 	}
 
 	return nil
 }
-
-
 
 // Count returns the number of items in the inbox.
 func (s *InboxStore) Count(ctx context.Context) (int64, error) {
@@ -100,4 +108,14 @@ func (s *InboxStore) EnqueueHeartbeat(ctx context.Context) (bool, error) {
 	}
 
 	return n > 0, nil
+}
+
+func (s *InboxStore) enqueue(ctx context.Context, params EnqueueInboxParams) error {
+	if err := s.queries.EnqueueInbox(ctx, params); err != nil {
+		return fmt.Errorf("enqueuing inbox item: %w", err)
+	}
+
+	slog.Info("inbox: enqueued", "source", params.Source, "priority", params.Priority)
+
+	return nil
 }

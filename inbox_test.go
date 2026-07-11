@@ -194,6 +194,31 @@ func TestInbox_ClearsStaleItemsOnInit(t *testing.T) {
 	}
 }
 
+func TestInbox_UserMetadataSurvivesRequeue(t *testing.T) {
+	t.Parallel()
+
+	ctx := context.Background()
+	inbox := newTestInbox(ctx, t)
+
+	must(t, inbox.EnqueueUser(ctx, "hello", "$reply", "!room", "$event", true))
+
+	item, err := inbox.Dequeue(ctx)
+	must(t, err)
+
+	if item.MessageID != "$event" || !item.IsGroup {
+		t.Fatalf("user metadata = %+v", item)
+	}
+
+	must(t, inbox.Requeue(ctx, item))
+
+	item, err = inbox.Dequeue(ctx)
+	must(t, err)
+
+	if item.MessageID != "$event" || !item.IsGroup {
+		t.Fatalf("requeued user metadata = %+v", item)
+	}
+}
+
 func TestInbox_Persistence(t *testing.T) {
 	t.Parallel()
 
@@ -249,7 +274,7 @@ func TestOpenDB_Pragmas(t *testing.T) {
 	}
 }
 
-func TestOpenDB_MigratesConversationID(t *testing.T) {
+func TestOpenDB_MigratesInboxColumns(t *testing.T) {
 	t.Parallel()
 
 	ctx := context.Background()
@@ -291,15 +316,23 @@ func TestOpenDB_MigratesConversationID(t *testing.T) {
 	}
 	defer db2.Close()
 
-	// Verify the column exists by querying it.
-	var conversationID string
-	err = db2.QueryRowContext(ctx, "SELECT conversation_id FROM inbox WHERE source = 'user'").Scan(&conversationID)
+	// Verify all added columns exist with backward-compatible defaults.
+	var (
+		conversationID string
+		messageID      string
+		isGroup        bool
+	)
+
+	err = db2.QueryRowContext(ctx, `
+		SELECT conversation_id, message_id, is_group
+		FROM inbox WHERE source = 'user'
+	`).Scan(&conversationID, &messageID, &isGroup)
 	if err != nil {
-		t.Fatalf("failed to query conversation_id after migration: %v", err)
+		t.Fatalf("failed to query migrated inbox columns: %v", err)
 	}
 
-	if conversationID != "" {
-		t.Errorf("conversation_id = %q, want empty string for pre-migration row", conversationID)
+	if conversationID != "" || messageID != "" || isGroup {
+		t.Errorf("migrated defaults = (%q, %q, %v)", conversationID, messageID, isGroup)
 	}
 }
 

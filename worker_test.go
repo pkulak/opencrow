@@ -269,7 +269,7 @@ func TestWorker_ProcessPrompt_ReactionStaysInSourceRoom(t *testing.T) {
 	}
 }
 
-func TestWorker_ProcessPromptSkipsTypingForFastReply(t *testing.T) {
+func TestWorker_ProcessPromptSkipsTypingForGroup(t *testing.T) {
 	t.Parallel()
 
 	w := newFakePiWorker(t)
@@ -288,6 +288,7 @@ func TestWorker_ProcessPromptSkipsTypingForFastReply(t *testing.T) {
 		Source:         sourceUser,
 		Content:        "hello",
 		ConversationID: reactionSourceRoom,
+		IsGroup:        true,
 	}
 
 	w.processPrompt(ctx, item)
@@ -296,18 +297,59 @@ func TestWorker_ProcessPromptSkipsTypingForFastReply(t *testing.T) {
 	defer mb.mu.Unlock()
 
 	if len(mb.typingCalls) != 0 {
-		t.Fatalf("typing calls = %+v, want none for fast reply", mb.typingCalls)
+		t.Fatalf("typing calls = %+v, want none for group reply", mb.typingCalls)
 	}
 }
 
-func TestWorker_DelayedTypingStartsAndClears(t *testing.T) {
+func TestWorker_ProcessPromptAcknowledgesFirstGroupToolUse(t *testing.T) {
+	t.Parallel()
+
+	w := newFakePiWorker(t)
+	rb := &reactionMockBackend{mockBackend: &mockBackend{markdownFlavor: backend.MarkdownNone}}
+	w.SetBackend(rb)
+
+	ctx := t.Context()
+	db := newTestDBAt(ctx, t, t.TempDir()+"/test.db")
+	inbox := newTestInboxWithDB(ctx, t, db)
+	app := NewApp(rb, w, inbox, db)
+	w.SetApp(app)
+
+	app.outbox.Put(ctx, reactionSourceRoom, "$tool-event", "please inspect")
+
+	w.processPrompt(ctx, Inbox{
+		Source:         sourceUser,
+		Content:        "tool-use-test",
+		ConversationID: reactionSourceRoom,
+		MessageID:      "$tool-event",
+		IsGroup:        true,
+	})
+
+	reactions := waitForReactions(t, rb, 1)
+	if len(reactions) != 1 {
+		t.Fatalf("reactions = %+v, want exactly one", reactions)
+	}
+
+	got := reactions[0]
+	if got.conversationID != reactionSourceRoom || got.messageID != "$tool-event" || got.emoji != "👀" {
+		t.Errorf("reaction = %+v", got)
+	}
+
+	rb.mu.Lock()
+	defer rb.mu.Unlock()
+
+	if len(rb.typingCalls) != 0 {
+		t.Errorf("typing calls = %+v, want none for group tool use", rb.typingCalls)
+	}
+}
+
+func TestWorker_TypingStartsAndClears(t *testing.T) {
 	t.Parallel()
 
 	mb := &mockBackend{}
 	w := NewWorker(nil, PiConfig{}, "", "")
 	w.SetBackend(mb)
 
-	stopTyping := w.startDelayedTyping(t.Context(), "room", 10*time.Millisecond)
+	stopTyping := w.startTyping(t.Context(), "room")
 
 	got := waitForTypingCalls(t, mb, 1)
 	if got[0].conversationID != "room" || !got[0].typing {
@@ -323,8 +365,31 @@ func TestWorker_DelayedTypingStartsAndClears(t *testing.T) {
 	if len(got) != 2 {
 		t.Fatalf("typing calls = %+v, want start and clear", got)
 	}
+
 	if got[1].conversationID != "room" || got[1].typing {
 		t.Fatalf("second typing call = %+v, want room/false", got[1])
+	}
+}
+
+func waitForReactions(t *testing.T, rb *reactionMockBackend, n int) []reactionCall {
+	t.Helper()
+
+	deadline := time.Now().Add(1 * time.Second)
+
+	for {
+		rb.mu.Lock()
+		got := append([]reactionCall(nil), rb.reactions...)
+		rb.mu.Unlock()
+
+		if len(got) >= n {
+			return got
+		}
+
+		if time.Now().After(deadline) {
+			t.Fatalf("reactions = %+v, want at least %d", got, n)
+		}
+
+		time.Sleep(5 * time.Millisecond)
 	}
 }
 
@@ -368,7 +433,7 @@ func TestWorker_PiSurvivesItemContext(t *testing.T) {
 	// the prompt completes.
 	itemCtx, cancel := context.WithCancel(context.Background())
 
-	pi, reply, err := w.sendWithRetry(itemCtx, "hello")
+	pi, reply, err := w.sendWithRetry(itemCtx, "hello", nil)
 	if err != nil || reply != "ok" {
 		t.Fatalf("sendWithRetry = (%q, %v), want (ok, nil)", reply, err)
 	}
@@ -388,7 +453,7 @@ func TestWorker_PiSurvivesItemContext(t *testing.T) {
 	// A follow-up prompt must reuse the existing process, not respawn.
 	// On eve the dead process triggered sendWithRetry's "pi exited,
 	// starting fresh process" path on every message.
-	pi2, _, err := w.sendWithRetry(t.Context(), "again")
+	pi2, _, err := w.sendWithRetry(t.Context(), "again", nil)
 	if err != nil {
 		t.Fatalf("second sendWithRetry: %v", err)
 	}
@@ -423,7 +488,7 @@ func TestWorker_StopPiKillsProcessTree(t *testing.T) {
 
 	w := newFakePiWorker(t)
 
-	_, _, err := w.sendWithRetry(t.Context(), "spawn-child")
+	_, _, err := w.sendWithRetry(t.Context(), "spawn-child", nil)
 	if err != nil {
 		t.Fatalf("sendWithRetry: %v", err)
 	}

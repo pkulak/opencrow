@@ -25,9 +25,6 @@ const (
 	sourceCompact   = "compact"
 )
 
-// typingIndicatorDelay avoids flashing typing indicators for fast NO_REPLY decisions.
-const typingIndicatorDelay = 5 * time.Second
-
 // Worker owns the single pi process and drains the inbox in priority order.
 // There is exactly one worker per opencrow instance.
 type Worker struct {
@@ -319,12 +316,16 @@ func (w *Worker) processPrompt(ctx context.Context, item Inbox) bool {
 		return w.handleNoRoomID(item) //nolint:contextcheck // requeue uses context.Background intentionally
 	}
 
-	stopTyping := w.startDelayedTyping(ctx, convID, typingIndicatorDelay)
+	stopTyping := func(context.Context) {}
+	if item.Source == sourceUser && !item.IsGroup {
+		stopTyping = w.startTyping(ctx, convID)
+	}
 	defer stopTyping(context.Background()) //nolint:contextcheck // must clear typing even after preemption
 
+	onToolCall := w.toolCallHandler(ctx, item, convID)
 	taskStart := time.Now()
 
-	pi, reply, err := w.sendWithRetry(ctx, prompt)
+	pi, reply, err := w.sendWithRetry(ctx, prompt, onToolCall)
 	if err != nil {
 		killPi := pi != nil
 
@@ -335,7 +336,7 @@ func (w *Worker) processPrompt(ctx context.Context, item Inbox) bool {
 	w.lastUse = time.Now()
 	w.mu.Unlock()
 
-	reply = w.prepareReply(ctx, pi, item, convID, reply)
+	reply = w.prepareReply(ctx, pi, item, convID, reply, onToolCall)
 
 	if shouldSuppressReply(reply, item.Source) {
 		return false
@@ -363,10 +364,16 @@ func (w *Worker) processPrompt(ctx context.Context, item Inbox) bool {
 // prepareReply extracts and applies an optional Matrix reaction, and retries a
 // genuinely empty user response. A reaction-only response is intentional
 // output and must not trigger the empty-response summary prompt.
-func (w *Worker) prepareReply(ctx context.Context, pi *PiProcess, item Inbox, convID, reply string) string {
+func (w *Worker) prepareReply(
+	ctx context.Context,
+	pi *PiProcess,
+	item Inbox,
+	convID, reply string,
+	onToolCall func(ToolCallEvent),
+) string {
 	if !w.app.supportsReactions() {
 		if item.Source == sourceUser && reply == "" {
-			return w.retryEmptyResponse(ctx, pi)
+			return w.retryEmptyResponse(ctx, pi, onToolCall)
 		}
 
 		return reply
@@ -374,7 +381,7 @@ func (w *Worker) prepareReply(ctx context.Context, pi *PiProcess, item Inbox, co
 
 	reply, reaction := extractReaction(reply)
 	if item.Source == sourceUser && reply == "" && reaction == nil {
-		reply = w.retryEmptyResponse(ctx, pi)
+		reply = w.retryEmptyResponse(ctx, pi, onToolCall)
 		reply, reaction = extractReaction(reply)
 	}
 
@@ -387,12 +394,44 @@ func (w *Worker) prepareReply(ctx context.Context, pi *PiProcess, item Inbox, co
 	return reply
 }
 
-// startDelayedTyping starts the backend typing indicator only if processing
-// still has not finished after delay. The returned function stops the timer
-// and clears the indicator if it was started.
-func (w *Worker) startDelayedTyping(ctx context.Context, convID string, delay time.Duration) func(context.Context) {
+// toolCallHandler reports visible tool calls when configured and acknowledges
+// the first tool used for a Matrix group message with an eyes reaction.
+func (w *Worker) toolCallHandler(ctx context.Context, item Inbox, convID string) func(ToolCallEvent) {
+	acknowledge := item.Source == sourceUser && item.IsGroup && item.MessageID != "" && w.app.supportsReactions()
+	if !acknowledge && !w.piCfg.ShowToolCalls {
+		return nil
+	}
+
+	var flavor backend.MarkdownFlavor
+	if w.piCfg.ShowToolCalls {
+		flavor = w.be.MarkdownFlavor()
+	}
+
+	notificationCtx := context.WithoutCancel(ctx)
+	acknowledged := false
+
+	return func(evt ToolCallEvent) {
+		if acknowledge && !acknowledged {
+			acknowledged = true
+
+			go func() {
+				reactionCtx, cancel := context.WithTimeout(notificationCtx, 10*time.Second)
+				defer cancel()
+
+				w.app.sendReaction(reactionCtx, convID, reactionRequest{messageID: item.MessageID, emoji: "👀"})
+			}()
+		}
+
+		if w.piCfg.ShowToolCalls {
+			w.be.SendMessage(notificationCtx, convID, formatToolCall(evt, flavor), "")
+		}
+	}
+}
+
+// startTyping starts the backend typing indicator without an artificial delay.
+// The returned function waits for the start attempt and clears it if necessary.
+func (w *Worker) startTyping(ctx context.Context, convID string) func(context.Context) {
 	var (
-		mu      sync.Mutex
 		started bool
 		once    sync.Once
 	)
@@ -403,42 +442,24 @@ func (w *Worker) startDelayedTyping(ctx context.Context, convID string, delay ti
 	go func() {
 		defer close(done)
 
-		timer := time.NewTimer(delay)
-		defer timer.Stop()
-
 		select {
-		case <-timer.C:
-			mu.Lock()
-			defer mu.Unlock()
-
-			select {
-			case <-stop:
-				return
-			default:
-			}
-
-			w.be.SetTyping(ctx, convID, true)
-
-			started = true
 		case <-stop:
 			return
 		case <-ctx.Done():
 			return
+		default:
 		}
+
+		w.be.SetTyping(ctx, convID, true)
+
+		started = true
 	}()
 
 	return func(clearCtx context.Context) {
-		once.Do(func() {
-			close(stop)
-		})
-
+		once.Do(func() { close(stop) })
 		<-done
 
-		mu.Lock()
-		shouldClear := started
-		mu.Unlock()
-
-		if shouldClear {
+		if started {
 			w.be.SetTyping(clearCtx, convID, false)
 		}
 	}
@@ -565,13 +586,17 @@ func wasPreempted(ctx context.Context, err error) bool {
 
 // sendWithRetry sends a prompt to pi, retrying once with a fresh
 // process if the first attempt fails due to a stale/crashed process.
-func (w *Worker) sendWithRetry(ctx context.Context, prompt string) (*PiProcess, string, error) {
+func (w *Worker) sendWithRetry(
+	ctx context.Context,
+	prompt string,
+	onToolCall func(ToolCallEvent),
+) (*PiProcess, string, error) {
 	pi, err := w.ensurePi(ctx)
 	if err != nil {
 		return nil, "", err
 	}
 
-	reply, err := pi.sendAndWait(ctx, prompt)
+	reply, err := pi.sendAndWait(ctx, prompt, onToolCall)
 	if err == nil {
 		return pi, reply, nil
 	}
@@ -589,7 +614,7 @@ func (w *Worker) sendWithRetry(ctx context.Context, prompt string) (*PiProcess, 
 		return nil, "", err
 	}
 
-	reply, err = pi.sendAndWait(ctx, prompt)
+	reply, err = pi.sendAndWait(ctx, prompt, onToolCall)
 
 	return pi, reply, err
 }
@@ -617,13 +642,6 @@ func (w *Worker) ensurePi(ctx context.Context) (*PiProcess, error) {
 	pi, err := StartPi(w.piCfg, roomID, fresh) //nolint:contextcheck // see StartPi: process lifetime is worker-owned, not item-scoped
 	if err != nil {
 		return nil, err
-	}
-
-	if w.piCfg.ShowToolCalls {
-		flavor := w.be.MarkdownFlavor()
-		pi.onToolCall = func(evt ToolCallEvent) { //nolint:contextcheck // fire-and-forget notification, no parent ctx
-			w.be.SendMessage(context.Background(), w.resolveRoomID(), formatToolCall(evt, flavor), "")
-		}
 	}
 
 	w.mu.Lock()
@@ -692,10 +710,10 @@ func (w *Worker) readHeartbeatFile() string {
 	return string(data)
 }
 
-func (w *Worker) retryEmptyResponse(ctx context.Context, pi *PiProcess) string {
+func (w *Worker) retryEmptyResponse(ctx context.Context, pi *PiProcess, onToolCall func(ToolCallEvent)) string {
 	slog.Warn("worker: empty response, re-prompting for summary")
 
-	reply, err := pi.sendAndWait(ctx, "You just completed a task but your response contained no text for the user. Please briefly summarize what you did or respond to the user's message.")
+	reply, err := pi.sendAndWait(ctx, "You just completed a task but your response contained no text for the user. Please briefly summarize what you did or respond to the user's message.", onToolCall)
 	if err != nil {
 		slog.Error("worker: re-prompt failed", "error", err)
 

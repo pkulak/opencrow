@@ -12,6 +12,7 @@ import (
 const (
 	testRoom           = "!room1"
 	reactionSourceRoom = "!source:matrix.org"
+	reactionEventID    = "$event"
 )
 
 // mockBackend records calls for testing.
@@ -570,9 +571,9 @@ func TestApp_SendReactionValidatesConversationAndMessage(t *testing.T) {
 	app := newTestAppForBackend(t, rb)
 	ctx := context.Background()
 
-	app.outbox.Put(ctx, reactionSourceRoom, "$event", "hello")
-	app.sendReaction(ctx, reactionSourceRoom, reactionRequest{messageID: "$event", emoji: "👍"})
-	app.sendReaction(ctx, "!other:matrix.org", reactionRequest{messageID: "$event", emoji: "❤️"})
+	app.outbox.Put(ctx, reactionSourceRoom, reactionEventID, "hello")
+	app.sendReaction(ctx, reactionSourceRoom, reactionRequest{messageID: reactionEventID, emoji: "👍"})
+	app.sendReaction(ctx, "!other:matrix.org", reactionRequest{messageID: reactionEventID, emoji: "❤️"})
 	app.sendReaction(ctx, reactionSourceRoom, reactionRequest{messageID: "$unknown", emoji: "❤️"})
 
 	rb.mu.Lock()
@@ -583,8 +584,29 @@ func TestApp_SendReactionValidatesConversationAndMessage(t *testing.T) {
 	}
 
 	got := rb.reactions[0]
-	if got.conversationID != reactionSourceRoom || got.messageID != "$event" || got.emoji != "👍" {
+	if got.conversationID != reactionSourceRoom || got.messageID != reactionEventID || got.emoji != "👍" {
 		t.Errorf("reaction = %+v", got)
+	}
+}
+
+func TestApp_EnqueuesMessageMetadata(t *testing.T) {
+	t.Parallel()
+
+	app, _ := newTestApp(t)
+	app.HandleMessage(t.Context(), backend.Message{
+		ConversationID: "!room:matrix.org",
+		MessageID:      "$metadata-event",
+		Text:           "hello",
+		IsDM:           false,
+	})
+
+	item, err := app.inbox.Dequeue(t.Context())
+	if err != nil {
+		t.Fatal(err)
+	}
+
+	if item.MessageID != "$metadata-event" || !item.IsGroup {
+		t.Errorf("message metadata = %+v", item)
 	}
 }
 

@@ -29,6 +29,16 @@ while IFS= read -r line; do
           printf '%s\n' '{"type":"agent_end","messages":[{"role":"assistant","content":[{"type":"text","text":"<send-to>!other:matrix.org</send-to>\n<react id=\"$event-1\">❤️</react>\nHello from other room"}],"stopReason":"end_turn"}]}'
           continue
           ;;
+        *tool-use-test*)
+          printf '%s\n' '{"type":"response","command":"prompt","success":true}'
+          printf '%s\n' '{"type":"agent_start"}'
+          printf '%s\n' '{"type":"tool_execution_start","toolName":"read","args":{"path":"/tmp/one"}}'
+          printf '%s\n' '{"type":"tool_execution_end","toolName":"read"}'
+          printf '%s\n' '{"type":"tool_execution_start","toolName":"bash","args":{"command":"true"}}'
+          printf '%s\n' '{"type":"tool_execution_end","toolName":"bash"}'
+          printf '%s\n' '{"type":"agent_end","messages":[{"role":"assistant","content":[{"type":"text","text":"Tool work complete"}],"stopReason":"end_turn"}]}'
+          continue
+          ;;
       esac
       # Return <send-to> in the assistant reply when the prompt contains
       # "send-to-test".

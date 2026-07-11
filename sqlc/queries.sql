@@ -20,8 +20,10 @@ WHERE rowid IN (
 );
 
 -- name: EnqueueInbox :exec
-INSERT INTO inbox (priority, source, content, reply_to, conversation_id)
-VALUES (?, ?, ?, ?, ?);
+INSERT INTO inbox (
+    priority, source, content, reply_to, conversation_id, message_id, is_group
+)
+VALUES (?, ?, ?, ?, ?, ?, ?);
 
 -- name: DequeueInbox :one
 DELETE FROM inbox
@@ -30,10 +32,12 @@ WHERE id = (
     ORDER BY priority ASC, id ASC
     LIMIT 1
 )
-RETURNING id, priority, source, content, reply_to, conversation_id, created_at;
+RETURNING id, priority, source, content, reply_to, conversation_id,
+          message_id, is_group, created_at;
 
 -- name: PeekInbox :one
-SELECT id, priority, source, content, reply_to, conversation_id, created_at
+SELECT id, priority, source, content, reply_to, conversation_id,
+       message_id, is_group, created_at
 FROM inbox
 ORDER BY priority ASC, id ASC
 LIMIT 1;

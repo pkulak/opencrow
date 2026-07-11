@@ -20,5 +20,7 @@ CREATE TABLE IF NOT EXISTS inbox (
     content         TEXT    NOT NULL DEFAULT '',
     reply_to        TEXT    NOT NULL DEFAULT '',  -- backend message ID to reply to
     conversation_id TEXT    NOT NULL DEFAULT '',  -- room/channel ID for routing replies
+    message_id      TEXT    NOT NULL DEFAULT '',  -- incoming backend message ID
+    is_group        BOOLEAN NOT NULL DEFAULT FALSE,
     created_at      TEXT    NOT NULL DEFAULT (strftime('%Y-%m-%dT%H:%M:%fZ', 'now'))
 );

@@ -141,11 +141,17 @@ func openDB(ctx context.Context, sessionDir string) (*sql.DB, error) {
 		return nil, fmt.Errorf("migrating schema: %w", err)
 	}
 
-	// Migrate existing databases: add conversation_id column if absent.
+	// Migrate existing databases: add newer inbox columns if absent.
 	if err := migrateInboxConversationID(ctx, db); err != nil {
 		db.Close()
 
 		return nil, fmt.Errorf("migrating inbox conversation_id: %w", err)
+	}
+
+	if err := migrateInboxMessageMetadata(ctx, db); err != nil {
+		db.Close()
+
+		return nil, fmt.Errorf("migrating inbox message metadata: %w", err)
 	}
 
 	if err := migrateLegacyOutbox(ctx, db, sessionDir); err != nil {
@@ -169,6 +175,35 @@ func migrateInboxConversationID(ctx context.Context, db *sql.DB) error {
 
 	if _, err := db.ExecContext(ctx, `ALTER TABLE inbox ADD COLUMN conversation_id TEXT NOT NULL DEFAULT ''`); err != nil {
 		return fmt.Errorf("adding conversation_id column: %w", err)
+	}
+
+	return nil
+}
+
+func migrateInboxMessageMetadata(ctx context.Context, db *sql.DB) error {
+	columns := []struct {
+		name      string
+		statement string
+	}{
+		{"message_id", `ALTER TABLE inbox ADD COLUMN message_id TEXT NOT NULL DEFAULT ''`},
+		{"is_group", `ALTER TABLE inbox ADD COLUMN is_group BOOLEAN NOT NULL DEFAULT FALSE`},
+	}
+
+	for _, column := range columns {
+		var count int
+		if err := db.QueryRowContext(ctx, "SELECT count(*) FROM pragma_table_info('inbox') WHERE name = ?", column.name).Scan(&count); err != nil {
+			return fmt.Errorf("checking %s column: %w", column.name, err)
+		}
+
+		if count != 0 {
+			continue
+		}
+
+		slog.Info("migrating inbox: adding column", "column", column.name)
+
+		if _, err := db.ExecContext(ctx, column.statement); err != nil {
+			return fmt.Errorf("adding %s column: %w", column.name, err)
+		}
 	}
 
 	return nil

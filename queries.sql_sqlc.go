@@ -77,7 +77,8 @@ WHERE id = (
     ORDER BY priority ASC, id ASC
     LIMIT 1
 )
-RETURNING id, priority, source, content, reply_to, conversation_id, created_at
+RETURNING id, priority, source, content, reply_to, conversation_id,
+          message_id, is_group, created_at
 `
 
 func (q *Queries) DequeueInbox(ctx context.Context) (Inbox, error) {
@@ -90,6 +91,8 @@ func (q *Queries) DequeueInbox(ctx context.Context) (Inbox, error) {
 		&i.Content,
 		&i.ReplyTo,
 		&i.ConversationID,
+		&i.MessageID,
+		&i.IsGroup,
 		&i.CreatedAt,
 	)
 	return i, err
@@ -137,8 +140,10 @@ func (q *Queries) EnqueueHeartbeatIfEmpty(ctx context.Context, priority int64) (
 }
 
 const enqueueInbox = `-- name: EnqueueInbox :exec
-INSERT INTO inbox (priority, source, content, reply_to, conversation_id)
-VALUES (?, ?, ?, ?, ?)
+INSERT INTO inbox (
+    priority, source, content, reply_to, conversation_id, message_id, is_group
+)
+VALUES (?, ?, ?, ?, ?, ?, ?)
 `
 
 type EnqueueInboxParams struct {
@@ -147,6 +152,8 @@ type EnqueueInboxParams struct {
 	Content        string
 	ReplyTo        string
 	ConversationID string
+	MessageID      string
+	IsGroup        bool
 }
 
 func (q *Queries) EnqueueInbox(ctx context.Context, arg EnqueueInboxParams) error {
@@ -156,6 +163,8 @@ func (q *Queries) EnqueueInbox(ctx context.Context, arg EnqueueInboxParams) erro
 		arg.Content,
 		arg.ReplyTo,
 		arg.ConversationID,
+		arg.MessageID,
+		arg.IsGroup,
 	)
 	return err
 }
@@ -192,7 +201,8 @@ func (q *Queries) InsertReminder(ctx context.Context, arg InsertReminderParams) 
 }
 
 const peekInbox = `-- name: PeekInbox :one
-SELECT id, priority, source, content, reply_to, conversation_id, created_at
+SELECT id, priority, source, content, reply_to, conversation_id,
+       message_id, is_group, created_at
 FROM inbox
 ORDER BY priority ASC, id ASC
 LIMIT 1
@@ -208,6 +218,8 @@ func (q *Queries) PeekInbox(ctx context.Context) (Inbox, error) {
 		&i.Content,
 		&i.ReplyTo,
 		&i.ConversationID,
+		&i.MessageID,
+		&i.IsGroup,
 		&i.CreatedAt,
 	)
 	return i, err

@@ -11,6 +11,8 @@ type Inbox struct {
 	Content        string
 	ReplyTo        string
 	ConversationID string
+	MessageID      string
+	IsGroup        bool
 	CreatedAt      string
 }
 

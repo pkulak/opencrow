@@ -109,13 +109,18 @@ func (p *PiProcess) Compact(ctx context.Context) (*CompactResult, error) {
 }
 
 // sendAndWait sends a prompt command and waits for the agent to finish.
-// The caller must ensure only one goroutine calls this at a time.
+// The caller must ensure only one goroutine calls this at a time. Tool calls
+// made during this prompt are forwarded to onToolCall when non-nil.
 // If ctx is cancelled, an abort command is sent to pi and the response
 // is drained before returning.
-func (p *PiProcess) sendAndWait(ctx context.Context, message string) (string, error) {
+func (p *PiProcess) sendAndWait(ctx context.Context, message string, onToolCall func(ToolCallEvent)) (string, error) {
 	if !p.IsAlive() {
 		return "", errors.New("pi process is not alive")
 	}
+
+	p.onToolCall = onToolCall
+
+	defer func() { p.onToolCall = nil }()
 
 	if err := p.sendPromptCommand(message); err != nil {
 		return "", err
