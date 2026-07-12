@@ -150,6 +150,7 @@ func TestExtractReaction(t *testing.T) {
 		{"no tag", "hello", "hello", "", ""},
 		{"reaction only", `<react id="$event">👍</react>`, "", "$event", "👍"},
 		{"reaction with text", "Hello\n<react id=\"$event\"> ❤️ </react>", "Hello", "$event", "❤️"},
+		{"reaction trailing text", `Hi Phil! <react id="$event">👋</react>`, "Hi Phil!", "$event", "👋"},
 		{"HTML escaped id", `<react id="$a&amp;b">👍</react>`, "", "$a&b", "👍"},
 		{"multiple uses first valid", "<react id=\"$first\">👍</react>\nText\n<react id=\"$second\">❤️</react>", "Text", "$first", "👍"},
 		{"empty emoji stripped", `<react id="$event"> </react>`, "", "", ""},

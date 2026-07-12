@@ -17,7 +17,7 @@ import (
 var (
 	sendFileRe = regexp.MustCompile(`<sendfile>\s*(.*?)\s*</sendfile>`)
 	sendToRe   = regexp.MustCompile(`<send-to>\s*(.*?)\s*</send-to>`)
-	reactRe    = regexp.MustCompile(`(?m)^[\t ]*<react[\t ]+id="([^"\r\n]+)">([^\r\n]*)</react>[\t ]*$`)
+	reactRe    = regexp.MustCompile(`(?m)(?:^[\t ]*|[\t ]+)<react[\t ]+id="([^"\r\n]+)">([^\r\n]*)</react>[\t ]*$`)
 )
 
 const maxReactionBytes = 64
@@ -35,9 +35,9 @@ type appMatrix interface {
 	SystemPromptExtra() string
 }
 
-// extractReaction finds standalone <react> control tags, strips all of them,
-// and returns the first valid request. Requiring a complete standalone line
-// reduces accidental activation when the syntax is mentioned in prose.
+// extractReaction finds standalone or line-trailing <react> control tags,
+// strips all of them, and returns the first valid request. Tags followed by
+// prose are ignored to avoid activating syntax that is only being discussed.
 func extractReaction(text string) (string, *reactionRequest) {
 	matches := reactRe.FindAllStringSubmatch(text, -1)
 	if len(matches) == 0 {
