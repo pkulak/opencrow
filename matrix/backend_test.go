@@ -3,8 +3,12 @@ package matrix
 import (
 	"context"
 	"encoding/json"
+	"image"
+	"image/jpeg"
 	"net/http"
 	"net/http/httptest"
+	"os"
+	"path/filepath"
 	"strings"
 	"testing"
 	"time"
@@ -67,6 +71,175 @@ func TestSendReaction(t *testing.T) {
 
 	if relatesTo["event_id"] != "$event" || relatesTo["rel_type"] != "m.annotation" || relatesTo["key"] != "👍" {
 		t.Errorf("m.relates_to = %#v", relatesTo)
+	}
+}
+
+type videoSendCapture struct {
+	t           *testing.T
+	uploadTypes []string
+	uploadNames []string
+	sentContent map[string]any
+}
+
+func (capture *videoSendCapture) ServeHTTP(w http.ResponseWriter, r *http.Request) {
+	w.Header().Set("Content-Type", "application/json")
+
+	switch {
+	case strings.HasSuffix(r.URL.Path, "/upload"):
+		capture.uploadTypes = append(capture.uploadTypes, r.Header.Get("Content-Type"))
+		capture.uploadNames = append(capture.uploadNames, r.URL.Query().Get("filename"))
+
+		uri := "mxc://example.org/video"
+		if len(capture.uploadTypes) == 2 {
+			uri = "mxc://example.org/thumbnail"
+		}
+
+		writeJSON(capture.t, w, map[string]string{"content_uri": uri})
+	case strings.Contains(r.URL.Path, "/send/m.room.message/"):
+		if err := json.NewDecoder(r.Body).Decode(&capture.sentContent); err != nil {
+			capture.t.Errorf("decoding sent event: %v", err)
+		}
+
+		_, _ = w.Write([]byte(`{"event_id":"$video"}`))
+	default:
+		capture.t.Errorf("unexpected request: %s %s", r.Method, r.URL.Path)
+		http.NotFound(w, r)
+	}
+}
+
+func TestSendFileIncludesVideoThumbnailAndMetadata(t *testing.T) { //nolint:paralleltest // modifies PATH to install fake media tools
+	tempDir := t.TempDir()
+	videoPath := filepath.Join(tempDir, "clip.mp4")
+
+	if err := os.WriteFile(videoPath, []byte("video"), 0o600); err != nil {
+		t.Fatal(err)
+	}
+
+	thumbnailPath := filepath.Join(tempDir, "thumbnail.jpg")
+	writeTestThumbnail(t, thumbnailPath)
+	installFakeVideoTools(t, tempDir, thumbnailPath)
+
+	capture := &videoSendCapture{t: t}
+	server := httptest.NewServer(capture)
+
+	defer server.Close()
+
+	client, err := mautrix.NewClient(server.URL, id.UserID("@bot:example.org"), "token")
+	if err != nil {
+		t.Fatal(err)
+	}
+
+	backend := &Backend{client: client}
+	if err := backend.SendFile(context.Background(), "!room:example.org", videoPath); err != nil {
+		t.Fatal(err)
+	}
+
+	assertVideoUploads(t, capture)
+	assertVideoEvent(t, capture.sentContent)
+}
+
+func writeTestThumbnail(t *testing.T, path string) {
+	t.Helper()
+
+	file, err := os.Create(path)
+	if err != nil {
+		t.Fatal(err)
+	}
+
+	if err := jpeg.Encode(file, image.NewRGBA(image.Rect(0, 0, 320, 180)), nil); err != nil {
+		file.Close()
+		t.Fatal(err)
+	}
+
+	if err := file.Close(); err != nil {
+		t.Fatal(err)
+	}
+}
+
+func installFakeVideoTools(t *testing.T, tempDir, thumbnailPath string) {
+	t.Helper()
+
+	binDir := filepath.Join(tempDir, "bin")
+	if err := os.Mkdir(binDir, 0o700); err != nil {
+		t.Fatal(err)
+	}
+
+	writeExecutable(t, filepath.Join(binDir, "ffprobe"), `#!/bin/sh
+printf '%s\n' '{"streams":[{"width":636,"height":360}],"format":{"duration":"12.5"}}'
+`)
+	writeExecutable(t, filepath.Join(binDir, "ffmpeg"), `#!/bin/sh
+cat "$FAKE_VIDEO_THUMBNAIL"
+`)
+
+	t.Setenv("PATH", binDir+string(os.PathListSeparator)+os.Getenv("PATH"))
+	t.Setenv("FAKE_VIDEO_THUMBNAIL", thumbnailPath)
+}
+
+func writeExecutable(t *testing.T, path, contents string) {
+	t.Helper()
+
+	if err := os.WriteFile(path, []byte(contents), 0o700); err != nil { //nolint:gosec // test helper creates executables
+		t.Fatal(err)
+	}
+}
+
+func assertVideoUploads(t *testing.T, capture *videoSendCapture) {
+	t.Helper()
+
+	if len(capture.uploadTypes) != 2 {
+		t.Fatalf("upload content types = %v, want video and thumbnail", capture.uploadTypes)
+	}
+
+	if capture.uploadTypes[0] != "video/mp4" || capture.uploadTypes[1] != "image/jpeg" {
+		t.Errorf("upload content types = %v", capture.uploadTypes)
+	}
+
+	if capture.uploadNames[0] != "clip.mp4" || capture.uploadNames[1] != "clip-thumbnail.jpg" {
+		t.Errorf("upload filenames = %v", capture.uploadNames)
+	}
+}
+
+func assertVideoEvent(t *testing.T, sentContent map[string]any) {
+	t.Helper()
+
+	if sentContent["msgtype"] != "m.video" {
+		t.Errorf("msgtype = %v, want m.video", sentContent["msgtype"])
+	}
+
+	info, ok := sentContent["info"].(map[string]any)
+	if !ok {
+		t.Fatalf("info = %#v", sentContent["info"])
+	}
+
+	if info["w"] != float64(636) || info["h"] != float64(360) || info["duration"] != float64(12500) {
+		t.Errorf("video metadata = %#v", info)
+	}
+
+	if info["thumbnail_url"] != "mxc://example.org/thumbnail" {
+		t.Errorf("thumbnail_url = %v", info["thumbnail_url"])
+	}
+
+	assertThumbnailInfo(t, info["thumbnail_info"])
+}
+
+func assertThumbnailInfo(t *testing.T, value any) {
+	t.Helper()
+
+	thumbnailInfo, ok := value.(map[string]any)
+	if !ok {
+		t.Fatalf("thumbnail_info = %#v", value)
+	}
+
+	if thumbnailInfo["mimetype"] != "image/jpeg" || thumbnailInfo["w"] != float64(320) || thumbnailInfo["h"] != float64(180) {
+		t.Errorf("thumbnail metadata = %#v", thumbnailInfo)
+	}
+}
+
+func writeJSON(t *testing.T, w http.ResponseWriter, value any) {
+	t.Helper()
+
+	if err := json.NewEncoder(w).Encode(value); err != nil {
+		t.Errorf("encoding response: %v", err)
 	}
 }
 

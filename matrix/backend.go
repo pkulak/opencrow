@@ -272,15 +272,20 @@ func (b *Backend) SendFile(ctx context.Context, conversationID string, filePath 
 		msgType = event.MsgVideo
 	}
 
+	fileInfo := &event.FileInfo{
+		MimeType: contentType,
+		Size:     len(data),
+	}
+	if msgType == event.MsgVideo {
+		b.enrichVideoInfo(ctx, filePath, fileInfo)
+	}
+
 	content := &event.MessageEventContent{
 		MsgType:  msgType,
 		Body:     filepath.Base(filePath),
 		URL:      resp.ContentURI.CUString(),
 		FileName: filepath.Base(filePath),
-		Info: &event.FileInfo{
-			MimeType: contentType,
-			Size:     len(data),
-		},
+		Info:     fileInfo,
 	}
 
 	_, err = b.client.SendMessageEvent(ctx, roomID, event.EventMessage, content)
