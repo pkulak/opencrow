@@ -1,4 +1,4 @@
-// Package matrix implements the Backend interface for Matrix messaging.
+// Package matrix implements Matrix messaging for OpenCrow.
 package matrix
 
 import (
@@ -18,7 +18,6 @@ import (
 	"sync/atomic"
 	"time"
 
-	"github.com/pinpox/opencrow/backend"
 	"github.com/rs/zerolog"
 	"go.mau.fi/util/dbutil"
 	"maunium.net/go/mautrix"
@@ -47,6 +46,23 @@ type Config struct {
 	MultiRoom      bool   // are we expecting to be in multiple/group chats?
 }
 
+// Message represents an inbound Matrix message.
+type Message struct {
+	ConversationID string // Matrix room ID
+	SenderID       string // Matrix user ID
+	Text           string
+	MessageID      string // Matrix event ID
+	ReplyToID      string // event ID of the message being replied to
+
+	SenderName string
+	RoomName   string
+	RoomSize   int
+	IsDM       bool
+}
+
+// MessageHandler is called for each inbound user message.
+type MessageHandler func(ctx context.Context, msg Message)
+
 // roomState caches per-room metadata that would otherwise require a
 // homeserver round-trip on every incoming message. Kept current by the
 // sync-stream hooks in Run.
@@ -55,11 +71,11 @@ type roomState struct {
 	members map[id.UserID]string // joined user → display name (may be "")
 }
 
-// Backend implements backend.Backend for Matrix.
+// Backend connects Matrix to the OpenCrow core.
 type Backend struct {
 	client        *mautrix.Client
 	cryptoHelper  *cryptohelper.CryptoHelper
-	handler       backend.MessageHandler
+	handler       MessageHandler
 	cfg           Config
 	userID        id.UserID
 	allowedUsers  map[string]struct{}
@@ -80,7 +96,7 @@ type Backend struct {
 }
 
 // New creates a new Matrix backend.
-func New(cfg Config, handler backend.MessageHandler) (*Backend, error) {
+func New(cfg Config, handler MessageHandler) (*Backend, error) {
 	client, err := mautrix.NewClient(cfg.Homeserver, id.UserID(cfg.UserID), cfg.AccessToken)
 	if err != nil {
 		return nil, fmt.Errorf("creating matrix client: %w", err)
@@ -358,13 +374,6 @@ and you'll see them as "[User sent a file (<caption>): <path>]". Use the read to
 view the file at the given path.`
 }
 
-// MarkdownFlavor returns MarkdownFull: Matrix clients render Markdown via the
-// org.matrix.custom.html formatted body that SendMessage emits, including
-// language-tagged fenced code blocks for syntax highlighting.
-func (b *Backend) MarkdownFlavor() backend.MarkdownFlavor {
-	return backend.MarkdownFull
-}
-
 // --- internal handlers ---
 
 func (b *Backend) setupCrypto(ctx context.Context) error {
@@ -509,7 +518,7 @@ func (b *Backend) handleInvite(ctx context.Context, evt *event.Event) {
 		return
 	}
 
-	if !backend.IsAllowed(b.allowedUsers, string(evt.Sender)) {
+	if !isAllowed(b.allowedUsers, string(evt.Sender)) {
 		slog.Info("ignoring invite from non-allowed user", "sender", evt.Sender, "room", evt.RoomID)
 
 		return
@@ -767,7 +776,7 @@ func (b *Backend) handleMessage(ctx context.Context, evt *event.Event) {
 
 	// Enrich the message with room/sender metadata from the cache
 	// (lazy-populated on first access, kept current by sync hooks).
-	rzMsg := backend.Message{
+	rzMsg := Message{
 		ConversationID: roomID,
 		SenderID:       string(evt.Sender),
 		Text:           text,
@@ -798,7 +807,7 @@ func (b *Backend) filterMessage(evt *event.Event) *event.MessageEventContent {
 		return nil
 	}
 
-	if !backend.IsAllowed(b.allowedUsers, string(evt.Sender)) {
+	if !isAllowed(b.allowedUsers, string(evt.Sender)) {
 		return nil
 	}
 
@@ -849,7 +858,7 @@ func (b *Backend) handleAttachment(ctx context.Context, msg *event.MessageEventC
 		caption = ""
 	}
 
-	return backend.AttachmentText(caption, filePath)
+	return attachmentText(caption, filePath)
 }
 
 func (b *Backend) handleVerify(ctx context.Context, roomID id.RoomID) {
@@ -976,6 +985,36 @@ func (b *Backend) downloadEncrypted(ctx context.Context, mxcURL id.ContentURI, m
 	}
 
 	return nil
+}
+
+// attachmentText returns the canonical marker passed to the agent for an attachment.
+func attachmentText(caption, path string) string {
+	caption = sanitizeLine(caption)
+	path = sanitizeLine(path)
+
+	if caption == "" {
+		caption = "no caption"
+	}
+
+	if path == "" {
+		return fmt.Sprintf("[User sent a file (%s)]", caption)
+	}
+
+	return fmt.Sprintf("[User sent a file (%s): %s]", caption, path)
+}
+
+func sanitizeLine(s string) string {
+	return strings.TrimSpace(strings.NewReplacer("\r", " ", "\n", " ").Replace(s))
+}
+
+func isAllowed(allowlist map[string]struct{}, senderID string) bool {
+	if len(allowlist) == 0 {
+		return true
+	}
+
+	_, ok := allowlist[senderID]
+
+	return ok
 }
 
 // downloadPlain downloads an unencrypted Matrix attachment.

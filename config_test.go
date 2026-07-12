@@ -34,7 +34,7 @@ func testEnv(m map[string]string) func(string) string {
 	}
 }
 
-// baseMatrixEnv returns the minimum env needed for a matrix backend config.
+// baseMatrixEnv returns the minimum environment needed for Matrix.
 func baseMatrixEnv() map[string]string {
 	return map[string]string{
 		"OPENCROW_MATRIX_HOMESERVER":   "https://matrix.example.com",

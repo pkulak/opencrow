@@ -9,8 +9,8 @@ import (
 
 const maxOutboxPerConversation = 500
 
-// outboxStore tracks outgoing message text keyed by backend-specific
-// message ID, so we can resolve reply-to references from users. Entries are
+// outboxStore tracks outgoing message text keyed by Matrix event ID,
+// so we can resolve reply-to references from users. Entries are
 // per-conversation and bounded to avoid unbounded growth. The store is
 // persisted to SQLite so reply context survives bot restarts.
 type outboxStore struct {

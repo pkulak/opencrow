@@ -136,7 +136,7 @@ function scrubPrompt(prompt: string): string | null {
 function scrubTurn(text: string): string {
   let out = text;
 
-  // Reaction markup is transport control data, not conversational content.
+  // Reaction markup is Matrix control data, not conversational content.
   out = out.replace(REACTION_TAG_RE, "");
 
   // Unwrap the leading user prompt the same way recall does.

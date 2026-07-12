@@ -13,7 +13,6 @@ import (
 	"strings"
 	"syscall"
 
-	"github.com/pinpox/opencrow/backend"
 	"github.com/pinpox/opencrow/matrix"
 	// Register the pure-Go SQLite driver.
 	_ "modernc.org/sqlite"
@@ -246,14 +245,14 @@ func migrateLegacyOutbox(ctx context.Context, db *sql.DB, sessionDir string) err
 }
 
 // wireServices creates the Matrix backend, app, and worker using two-phase init.
-func wireServices(ctx context.Context, cfg *Config, db *sql.DB, inbox *InboxStore) (backend.Backend, *Worker, error) { //nolint:ireturn // core still consumes the transport interface
+func wireServices(ctx context.Context, cfg *Config, db *sql.DB, inbox *InboxStore) (*matrix.Backend, *Worker, error) {
 	// Phase 1: create objects with nil cross-references.
 	worker := NewWorker(inbox, cfg.Pi, cfg.Heartbeat.Prompt, defaultTriggerPrompt)
 
 	var app *App
 
 	b, err := createMatrixBackend(cfg,
-		func(ctx context.Context, msg backend.Message) { app.HandleMessage(ctx, msg) },
+		func(ctx context.Context, msg matrix.Message) { app.HandleMessage(ctx, msg) },
 		func(_ string) { worker.Restart() },
 	)
 	if err != nil {
@@ -263,7 +262,7 @@ func wireServices(ctx context.Context, cfg *Config, db *sql.DB, inbox *InboxStor
 	// Phase 2: wire cross-references.
 	app = NewApp(b, worker, inbox, db)
 	worker.SetApp(app)
-	worker.SetBackend(b)
+	worker.SetMatrix(b)
 
 	worker.piCfg.SystemPrompt = app.systemPrompt(worker.piCfg.SystemPrompt)
 
@@ -296,7 +295,7 @@ func spawnWorker(ctx context.Context, w *Worker) <-chan struct{} {
 	return done
 }
 
-func setupShutdown(b backend.Backend, cancel context.CancelFunc) {
+func setupShutdown(b *matrix.Backend, cancel context.CancelFunc) {
 	sigCh := make(chan os.Signal, 1)
 	signal.Notify(sigCh, syscall.SIGINT, syscall.SIGTERM)
 
@@ -308,7 +307,7 @@ func setupShutdown(b backend.Backend, cancel context.CancelFunc) {
 	}()
 }
 
-func createMatrixBackend(cfg *Config, handler backend.MessageHandler, onRoomCleanup func(string)) (*matrix.Backend, error) {
+func createMatrixBackend(cfg *Config, handler matrix.MessageHandler, onRoomCleanup func(string)) (*matrix.Backend, error) {
 	matrixCfg := matrix.Config{
 		Homeserver:     cfg.Matrix.Homeserver,
 		UserID:         cfg.Matrix.UserID,

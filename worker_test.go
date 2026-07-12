@@ -10,15 +10,12 @@ import (
 	"syscall"
 	"testing"
 	"time"
-
-	"github.com/pinpox/opencrow/backend"
 )
 
-type stubBackend struct{}
+type stubMatrix struct{}
 
-func (stubBackend) SetTyping(context.Context, string, bool)                    {}
-func (stubBackend) SendMessage(context.Context, string, string, string) string { return "" }
-func (stubBackend) MarkdownFlavor() backend.MarkdownFlavor                     { return backend.MarkdownNone }
+func (stubMatrix) SetTyping(context.Context, string, bool)                    {}
+func (stubMatrix) SendMessage(context.Context, string, string, string) string { return "" }
 
 // newFakePiWorker builds a Worker wired to the bash fake-pi stub.
 // Cleanup stops the spawned process.
@@ -38,7 +35,7 @@ func newFakePiWorker(t *testing.T) *Worker {
 		SessionDir: dir,
 		WorkingDir: dir,
 	}, "", "")
-	w.SetBackend(stubBackend{})
+	w.SetMatrix(stubMatrix{})
 	w.SetRoomID("room")
 
 	t.Cleanup(w.stopPi)
@@ -128,8 +125,8 @@ func TestWorker_ProcessPrompt_SendTo(t *testing.T) {
 
 	w := newFakePiWorker(t)
 
-	mb := &mockBackend{markdownFlavor: backend.MarkdownNone}
-	w.SetBackend(mb)
+	mb := &mockMatrix{}
+	w.SetMatrix(mb)
 
 	ctx := t.Context()
 	db := newTestDBAt(ctx, t, t.TempDir()+"/test.db")
@@ -172,8 +169,8 @@ func TestWorker_ProcessPrompt_ReactionOnly(t *testing.T) {
 	t.Parallel()
 
 	w := newFakePiWorker(t)
-	rb := &reactionMockBackend{mockBackend: &mockBackend{markdownFlavor: backend.MarkdownNone}}
-	w.SetBackend(rb)
+	rb := &mockMatrix{}
+	w.SetMatrix(rb)
 
 	ctx := t.Context()
 	db := newTestDBAt(ctx, t, t.TempDir()+"/test.db")
@@ -205,39 +202,12 @@ func TestWorker_ProcessPrompt_ReactionOnly(t *testing.T) {
 	}
 }
 
-func TestWorker_ProcessPrompt_ReactionTagIgnoredByUnsupportedBackend(t *testing.T) {
-	t.Parallel()
-
-	w := newFakePiWorker(t)
-	mb := &mockBackend{markdownFlavor: backend.MarkdownNone}
-	w.SetBackend(mb)
-
-	ctx := t.Context()
-	db := newTestDBAt(ctx, t, t.TempDir()+"/test.db")
-	inbox := newTestInboxWithDB(ctx, t, db)
-	app := NewApp(mb, w, inbox, db)
-	w.SetApp(app)
-
-	w.processPrompt(ctx, Inbox{
-		Source:         sourceUser,
-		Content:        "reaction-only-test",
-		ConversationID: reactionSourceRoom,
-	})
-
-	mb.mu.Lock()
-	defer mb.mu.Unlock()
-
-	if len(mb.sentMessages) != 1 || mb.sentMessages[0].text != `<react id="$event-1">👍</react>` {
-		t.Errorf("sent messages = %+v, want literal tag on unsupported backend", mb.sentMessages)
-	}
-}
-
 func TestWorker_ProcessPrompt_ReactionStaysInSourceRoom(t *testing.T) {
 	t.Parallel()
 
 	w := newFakePiWorker(t)
-	rb := &reactionMockBackend{mockBackend: &mockBackend{markdownFlavor: backend.MarkdownNone}}
-	w.SetBackend(rb)
+	rb := &mockMatrix{}
+	w.SetMatrix(rb)
 
 	ctx := t.Context()
 	db := newTestDBAt(ctx, t, t.TempDir()+"/test.db")
@@ -274,8 +244,8 @@ func TestWorker_ProcessPromptSkipsTypingForGroup(t *testing.T) {
 
 	w := newFakePiWorker(t)
 
-	mb := &mockBackend{markdownFlavor: backend.MarkdownNone}
-	w.SetBackend(mb)
+	mb := &mockMatrix{}
+	w.SetMatrix(mb)
 
 	ctx := t.Context()
 	db := newTestDBAt(ctx, t, t.TempDir()+"/test.db")
@@ -305,8 +275,8 @@ func TestWorker_ProcessPromptAcknowledgesFirstGroupToolUse(t *testing.T) {
 	t.Parallel()
 
 	w := newFakePiWorker(t)
-	rb := &reactionMockBackend{mockBackend: &mockBackend{markdownFlavor: backend.MarkdownNone}}
-	w.SetBackend(rb)
+	rb := &mockMatrix{}
+	w.SetMatrix(rb)
 
 	ctx := t.Context()
 	db := newTestDBAt(ctx, t, t.TempDir()+"/test.db")
@@ -345,9 +315,9 @@ func TestWorker_ProcessPromptAcknowledgesFirstGroupToolUse(t *testing.T) {
 func TestWorker_TypingStartsAndClears(t *testing.T) {
 	t.Parallel()
 
-	mb := &mockBackend{}
+	mb := &mockMatrix{}
 	w := NewWorker(nil, PiConfig{}, "", "")
-	w.SetBackend(mb)
+	w.SetMatrix(mb)
 
 	stopTyping := w.startTyping(t.Context(), "room")
 
@@ -371,15 +341,15 @@ func TestWorker_TypingStartsAndClears(t *testing.T) {
 	}
 }
 
-func waitForReactions(t *testing.T, rb *reactionMockBackend, n int) []reactionCall {
+func waitForReactions(t *testing.T, matrixClient *mockMatrix, n int) []reactionCall {
 	t.Helper()
 
 	deadline := time.Now().Add(1 * time.Second)
 
 	for {
-		rb.mu.Lock()
-		got := append([]reactionCall(nil), rb.reactions...)
-		rb.mu.Unlock()
+		matrixClient.mu.Lock()
+		got := append([]reactionCall(nil), matrixClient.reactions...)
+		matrixClient.mu.Unlock()
 
 		if len(got) >= n {
 			return got
@@ -393,15 +363,15 @@ func waitForReactions(t *testing.T, rb *reactionMockBackend, n int) []reactionCa
 	}
 }
 
-func waitForTypingCalls(t *testing.T, mb *mockBackend, n int) []typingCall {
+func waitForTypingCalls(t *testing.T, matrixClient *mockMatrix, n int) []typingCall {
 	t.Helper()
 
 	deadline := time.Now().Add(1 * time.Second)
 
 	for {
-		mb.mu.Lock()
-		got := append([]typingCall(nil), mb.typingCalls...)
-		mb.mu.Unlock()
+		matrixClient.mu.Lock()
+		got := append([]typingCall(nil), matrixClient.typingCalls...)
+		matrixClient.mu.Unlock()
 
 		if len(got) >= n {
 			return got

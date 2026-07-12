@@ -11,7 +11,7 @@ import (
 	"strconv"
 	"strings"
 
-	"github.com/pinpox/opencrow/backend"
+	"github.com/pinpox/opencrow/matrix"
 )
 
 var (
@@ -25,6 +25,14 @@ const maxReactionBytes = 64
 type reactionRequest struct {
 	messageID string
 	emoji     string
+}
+
+type appMatrix interface {
+	SendMessage(ctx context.Context, conversationID, text, replyToID string) string
+	SendFile(ctx context.Context, conversationID, filePath string) error
+	SendReaction(ctx context.Context, conversationID, messageID, emoji string) error
+	ResetConversation(ctx context.Context, conversationID string)
+	SystemPromptExtra() string
 }
 
 // extractReaction finds standalone <react> control tags, strips all of them,
@@ -95,29 +103,27 @@ func extractSendTo(text string) (string, string) {
 	return cleaned, roomID
 }
 
-// App orchestrates the business logic: command handling, inbox enqueueing,
-// and file extraction. It delegates transport concerns to a Backend.
+// App orchestrates command handling, inbox enqueueing, and file extraction.
 type App struct {
-	backend backend.Backend
-	worker  *Worker
-	inbox   *InboxStore
-	outbox  *outboxStore
+	matrix appMatrix
+	worker *Worker
+	inbox  *InboxStore
+	outbox *outboxStore
 }
 
 // NewApp creates a new App. The db connection is shared with the inbox
 // and owned by the caller.
-func NewApp(b backend.Backend, worker *Worker, inbox *InboxStore, db *sql.DB) *App {
+func NewApp(matrixClient appMatrix, worker *Worker, inbox *InboxStore, db *sql.DB) *App {
 	return &App{
-		backend: b,
-		worker:  worker,
-		inbox:   inbox,
-		outbox:  newOutboxStore(db),
+		matrix: matrixClient,
+		worker: worker,
+		inbox:  inbox,
+		outbox: newOutboxStore(db),
 	}
 }
 
-// HandleMessage is the backend.MessageHandler callback. It dispatches
-// commands and enqueues normal messages into the inbox.
-func (a *App) HandleMessage(ctx context.Context, msg backend.Message) {
+// HandleMessage dispatches commands and enqueues normal Matrix messages.
+func (a *App) HandleMessage(ctx context.Context, msg matrix.Message) {
 	// Record the incoming message so future reply-to references can quote it.
 	a.outbox.Put(ctx, msg.ConversationID, msg.MessageID, msg.Text)
 
@@ -137,45 +143,39 @@ func (a *App) HandleMessage(ctx context.Context, msg backend.Message) {
 	}
 }
 
-func (a *App) supportsReactions() bool {
-	_, ok := a.backend.(backend.ReactionSender)
-
-	return ok
-}
-
-func (a *App) handleHelp(ctx context.Context, msg backend.Message) {
+func (a *App) handleHelp(ctx context.Context, msg matrix.Message) {
 	help := "Available commands:\n" +
 		"  !help    — Show this help message\n" +
 		"  !restart — Kill the current session and start fresh\n" +
 		"  !stop    — Abort the currently running agent turn\n" +
 		"  !compact — Compact conversation context to reduce token usage\n" +
 		"  !skills  — List loaded skills"
-	a.backend.SendMessage(ctx, msg.ConversationID, help, "")
+	a.matrix.SendMessage(ctx, msg.ConversationID, help, "")
 }
 
-func (a *App) handleRestart(ctx context.Context, msg backend.Message) {
-	a.backend.ResetConversation(ctx, msg.ConversationID)
+func (a *App) handleRestart(ctx context.Context, msg matrix.Message) {
+	a.matrix.ResetConversation(ctx, msg.ConversationID)
 	a.worker.Restart()
-	a.backend.SendMessage(ctx, msg.ConversationID, "Session restarted. Next message starts a fresh session (previous context discarded).", "")
+	a.matrix.SendMessage(ctx, msg.ConversationID, "Session restarted. Next message starts a fresh session (previous context discarded).", "")
 }
 
-func (a *App) handleStop(ctx context.Context, msg backend.Message) {
+func (a *App) handleStop(ctx context.Context, msg matrix.Message) {
 	if !a.worker.IsActive() {
-		a.backend.SendMessage(ctx, msg.ConversationID, "No active session.", "")
+		a.matrix.SendMessage(ctx, msg.ConversationID, "No active session.", "")
 
 		return
 	}
 
 	if a.worker.Abort() {
-		a.backend.SendMessage(ctx, msg.ConversationID, "Aborted current operation.", "")
+		a.matrix.SendMessage(ctx, msg.ConversationID, "Aborted current operation.", "")
 	} else {
-		a.backend.SendMessage(ctx, msg.ConversationID, "Nothing running to stop.", "")
+		a.matrix.SendMessage(ctx, msg.ConversationID, "Nothing running to stop.", "")
 	}
 }
 
-func (a *App) handleCompact(ctx context.Context, msg backend.Message) {
+func (a *App) handleCompact(ctx context.Context, msg matrix.Message) {
 	if !a.worker.IsActive() {
-		a.backend.SendMessage(ctx, msg.ConversationID, "No active session to compact.", "")
+		a.matrix.SendMessage(ctx, msg.ConversationID, "No active session to compact.", "")
 
 		return
 	}
@@ -183,27 +183,27 @@ func (a *App) handleCompact(ctx context.Context, msg backend.Message) {
 	result, err := a.worker.Compact(ctx)
 	if err != nil {
 		slog.Error("compact failed", "conversation", msg.ConversationID, "error", err)
-		a.backend.SendMessage(ctx, msg.ConversationID, fmt.Sprintf("Compaction failed: %v", err), "")
+		a.matrix.SendMessage(ctx, msg.ConversationID, fmt.Sprintf("Compaction failed: %v", err), "")
 
 		return
 	}
 
 	reply := fmt.Sprintf("Compacted conversation (was %d tokens).\nSummary: %s", result.TokensBefore, result.Summary)
-	a.backend.SendMessage(ctx, msg.ConversationID, reply, "")
+	a.matrix.SendMessage(ctx, msg.ConversationID, reply, "")
 }
 
-func (a *App) handleSkills(ctx context.Context, msg backend.Message) {
-	a.backend.SendMessage(ctx, msg.ConversationID, a.worker.SkillsSummary(), "")
+func (a *App) handleSkills(ctx context.Context, msg matrix.Message) {
+	a.matrix.SendMessage(ctx, msg.ConversationID, a.worker.SkillsSummary(), "")
 }
 
-func (a *App) handlePrompt(ctx context.Context, msg backend.Message) {
+func (a *App) handlePrompt(ctx context.Context, msg matrix.Message) {
 	a.worker.SetRoomID(msg.ConversationID)
 
 	promptText := a.buildPromptText(ctx, msg)
 
 	if err := a.inbox.EnqueueUser(ctx, promptText, msg.ReplyToID, msg.ConversationID, msg.MessageID, !msg.IsDM); err != nil {
 		slog.Error("failed to enqueue user message", "error", err)
-		a.backend.SendMessage(ctx, msg.ConversationID, fmt.Sprintf("Error: %v", err), "")
+		a.matrix.SendMessage(ctx, msg.ConversationID, fmt.Sprintf("Error: %v", err), "")
 
 		return
 	}
@@ -212,7 +212,7 @@ func (a *App) handlePrompt(ctx context.Context, msg backend.Message) {
 }
 
 // buildPromptText prepends context tags and reply-quote context to the message text.
-func (a *App) buildPromptText(ctx context.Context, msg backend.Message) string {
+func (a *App) buildPromptText(ctx context.Context, msg matrix.Message) string {
 	promptText := msg.Text
 
 	if msg.ReplyToID != "" {
@@ -224,7 +224,7 @@ func (a *App) buildPromptText(ctx context.Context, msg backend.Message) string {
 	}
 
 	tags := buildContextTags(msg)
-	if a.supportsReactions() && msg.MessageID != "" {
+	if msg.MessageID != "" {
 		messageIDTag := "<message-id>" + escape(msg.MessageID) + "</message-id>"
 		if tags == "" {
 			tags = messageIDTag
@@ -243,7 +243,7 @@ func (a *App) buildPromptText(ctx context.Context, msg backend.Message) string {
 // buildContextTags returns a block of XML-style context tags derived from the
 // message's enrichment fields. Each non-zero field produces one line; zero
 // values are omitted entirely. Returns an empty string if no fields are set.
-func buildContextTags(msg backend.Message) string {
+func buildContextTags(msg matrix.Message) string {
 	var lines []string
 
 	if msg.SenderID != "" {
@@ -276,13 +276,8 @@ func escape(s string) string {
 }
 
 // sendReaction validates that the requested message is known in the current
-// conversation before asking the optional backend capability to react to it.
+// conversation before sending it to Matrix.
 func (a *App) sendReaction(ctx context.Context, conversationID string, reaction reactionRequest) {
-	sender, ok := a.backend.(backend.ReactionSender)
-	if !ok {
-		return
-	}
-
 	if a.outbox.Get(ctx, conversationID, reaction.messageID) == "" {
 		slog.Warn("ignoring reaction to unknown message",
 			"conversation", conversationID,
@@ -292,7 +287,7 @@ func (a *App) sendReaction(ctx context.Context, conversationID string, reaction 
 		return
 	}
 
-	if err := sender.SendReaction(ctx, conversationID, reaction.messageID, reaction.emoji); err != nil {
+	if err := a.matrix.SendReaction(ctx, conversationID, reaction.messageID, reaction.emoji); err != nil {
 		slog.Warn("failed to send reaction",
 			"conversation", conversationID,
 			"message", reaction.messageID,
@@ -314,74 +309,57 @@ func (a *App) sendReplyWithFiles(ctx context.Context, conversationID, reply, rep
 	for _, fp := range filePaths {
 		slog.Info("sending file", "conversation", conversationID, "path", fp)
 
-		if err := a.backend.SendFile(ctx, conversationID, fp); err != nil {
+		if err := a.matrix.SendFile(ctx, conversationID, fp); err != nil {
 			slog.Error("failed to send file", "conversation", conversationID, "path", fp, "error", err)
-			fileSendErrors.WriteString(fmt.Sprintf("\n\n(failed to send file %s: %v)", filepath.Base(fp), err))
+			fmt.Fprintf(&fileSendErrors, "\n\n(failed to send file %s: %v)", filepath.Base(fp), err)
 		}
 	}
 
 	cleanReply += fileSendErrors.String()
 
 	if cleanReply != "" {
-		sentID := a.backend.SendMessage(ctx, conversationID, cleanReply, replyToID)
+		sentID := a.matrix.SendMessage(ctx, conversationID, cleanReply, replyToID)
 		a.outbox.Put(ctx, conversationID, sentID, cleanReply)
 	}
 }
 
-// formatToolCall produces a short human-readable summary of a tool invocation.
-// The Markdown flavor controls whether commands and paths are wrapped in
-// fenced code blocks / inline backticks (and whether fences carry a language
-// hint) so backends that do not render Markdown do not leak raw syntax.
-func formatToolCall(evt ToolCallEvent, flavor backend.MarkdownFlavor) string {
+// formatToolCall produces a Matrix-formatted summary of a tool invocation.
+func formatToolCall(evt ToolCallEvent) string {
 	switch evt.ToolName {
 	case "bash":
-		return formatBashCall(evt, flavor)
+		return formatBashCall(evt)
 	case "read":
-		return formatPathCall(evt, flavor, "📄 reading", "file")
+		return formatPathCall(evt, "📄 reading", "file")
 	case "edit":
-		return formatPathCall(evt, flavor, "✏️ editing", "file")
+		return formatPathCall(evt, "✏️ editing", "file")
 	case "write":
-		return formatPathCall(evt, flavor, "📝 writing", "file")
+		return formatPathCall(evt, "📝 writing", "file")
 	default:
 		return "🔧 " + evt.ToolName
 	}
 }
 
-func formatBashCall(evt ToolCallEvent, flavor backend.MarkdownFlavor) string {
+func formatBashCall(evt ToolCallEvent) string {
 	cmd, ok := evt.Args["command"].(string)
 	if !ok {
 		return "🔧 bash"
 	}
 
-	switch flavor {
-	case backend.MarkdownFull:
-		return fmt.Sprintf("🔧\n```sh\n%s\n```", cmd)
-	case backend.MarkdownBasic:
-		// No language hint for clients that render it literally.
-		return fmt.Sprintf("🔧\n```\n%s\n```", cmd)
-	case backend.MarkdownNone:
-		return "🔧 " + cmd
-	default:
-		return "🔧 " + cmd
-	}
+	return fmt.Sprintf("🔧\n```sh\n%s\n```", cmd)
 }
 
-func formatPathCall(evt ToolCallEvent, flavor backend.MarkdownFlavor, prefix, fallback string) string {
+func formatPathCall(evt ToolCallEvent, prefix, fallback string) string {
 	p, ok := evt.Args["path"].(string)
 	if !ok {
 		return prefix + " " + fallback
 	}
 
-	if flavor == backend.MarkdownNone {
-		return prefix + " " + p
-	}
-
 	return prefix + " `" + p + "`"
 }
 
-// systemPrompt returns the full system prompt including backend-specific extras.
+// systemPrompt returns the full system prompt including Matrix-specific context.
 func (a *App) systemPrompt(basePrompt string) string {
-	extra := a.backend.SystemPromptExtra()
+	extra := a.matrix.SystemPromptExtra()
 	if extra == "" {
 		return basePrompt
 	}

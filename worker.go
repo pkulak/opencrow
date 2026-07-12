@@ -13,8 +13,6 @@ import (
 	"sync"
 	"sync/atomic"
 	"time"
-
-	"github.com/pinpox/opencrow/backend"
 )
 
 // Source names for inbox items.
@@ -28,10 +26,10 @@ const (
 // Worker owns the single pi process and drains the inbox in priority order.
 // There is exactly one worker per opencrow instance.
 type Worker struct {
-	inbox *InboxStore
-	piCfg PiConfig
-	app   *App
-	be    Backend
+	inbox  *InboxStore
+	piCfg  PiConfig
+	app    *App
+	matrix workerMatrix
 
 	roomID atomic.Value // string, resolved lazily from .room_id file
 
@@ -59,15 +57,13 @@ type compactOutcome struct {
 	err    error
 }
 
-// Backend is the subset of backend.Backend the worker needs.
-type Backend interface {
+type workerMatrix interface {
 	SetTyping(ctx context.Context, conversationID string, typing bool)
-	SendMessage(ctx context.Context, conversationID string, text string, replyToID string) string
-	MarkdownFlavor() backend.MarkdownFlavor
+	SendMessage(ctx context.Context, conversationID, text, replyToID string) string
 }
 
 // NewWorker creates a new worker. The pi process is started lazily on first dequeue.
-// app and be are set after construction via SetApp/SetBackend (two-phase init).
+// app and matrix are set after construction via SetApp/SetMatrix (two-phase init).
 func NewWorker(inbox *InboxStore, piCfg PiConfig, hbPrompt, triggerPrompt string) *Worker {
 	return &Worker{
 		inbox:           inbox,
@@ -83,8 +79,8 @@ func NewWorker(inbox *InboxStore, piCfg PiConfig, hbPrompt, triggerPrompt string
 // SetApp wires the app reference (phase 2 of init).
 func (w *Worker) SetApp(app *App) { w.app = app }
 
-// SetBackend wires the backend reference (phase 2 of init).
-func (w *Worker) SetBackend(be Backend) { w.be = be }
+// SetMatrix wires the Matrix reference (phase 2 of init).
+func (w *Worker) SetMatrix(matrixClient workerMatrix) { w.matrix = matrixClient }
 
 // Notify wakes the worker loop. Called after enqueueing an item.
 // If the new item has strictly higher priority than the running one,
@@ -371,14 +367,6 @@ func (w *Worker) prepareReply(
 	convID, reply string,
 	onToolCall func(ToolCallEvent),
 ) string {
-	if !w.app.supportsReactions() {
-		if item.Source == sourceUser && reply == "" {
-			return w.retryEmptyResponse(ctx, pi, onToolCall)
-		}
-
-		return reply
-	}
-
 	reply, reaction := extractReaction(reply)
 	if item.Source == sourceUser && reply == "" && reaction == nil {
 		reply = w.retryEmptyResponse(ctx, pi, onToolCall)
@@ -397,14 +385,9 @@ func (w *Worker) prepareReply(
 // toolCallHandler reports visible tool calls when configured and acknowledges
 // the first tool used for a Matrix group message with an eyes reaction.
 func (w *Worker) toolCallHandler(ctx context.Context, item Inbox, convID string) func(ToolCallEvent) {
-	acknowledge := item.Source == sourceUser && item.IsGroup && item.MessageID != "" && w.app.supportsReactions()
+	acknowledge := item.Source == sourceUser && item.IsGroup && item.MessageID != ""
 	if !acknowledge && !w.piCfg.ShowToolCalls {
 		return nil
-	}
-
-	var flavor backend.MarkdownFlavor
-	if w.piCfg.ShowToolCalls {
-		flavor = w.be.MarkdownFlavor()
 	}
 
 	notificationCtx := context.WithoutCancel(ctx)
@@ -423,12 +406,12 @@ func (w *Worker) toolCallHandler(ctx context.Context, item Inbox, convID string)
 		}
 
 		if w.piCfg.ShowToolCalls {
-			w.be.SendMessage(notificationCtx, convID, formatToolCall(evt, flavor), "")
+			w.matrix.SendMessage(notificationCtx, convID, formatToolCall(evt), "")
 		}
 	}
 }
 
-// startTyping starts the backend typing indicator without an artificial delay.
+// startTyping starts the Matrix typing indicator without an artificial delay.
 // The returned function waits for the start attempt and clears it if necessary.
 func (w *Worker) startTyping(ctx context.Context, convID string) func(context.Context) {
 	var (
@@ -450,7 +433,7 @@ func (w *Worker) startTyping(ctx context.Context, convID string) func(context.Co
 		default:
 		}
 
-		w.be.SetTyping(ctx, convID, true)
+		w.matrix.SetTyping(ctx, convID, true)
 
 		started = true
 	}()
@@ -460,7 +443,7 @@ func (w *Worker) startTyping(ctx context.Context, convID string) func(context.Co
 		<-done
 
 		if started {
-			w.be.SetTyping(clearCtx, convID, false)
+			w.matrix.SetTyping(clearCtx, convID, false)
 		}
 	}
 }
@@ -534,7 +517,7 @@ func (w *Worker) handlePiError(ctx context.Context, item Inbox, convID, label st
 	}
 
 	if item.Source == sourceUser {
-		w.be.SendMessage(ctx, convID, fmt.Sprintf("Error: %v", err), "")
+		w.matrix.SendMessage(ctx, convID, fmt.Sprintf("Error: %v", err), "")
 	}
 
 	return false

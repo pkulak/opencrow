@@ -18,9 +18,9 @@ CREATE TABLE IF NOT EXISTS inbox (
     priority        INTEGER NOT NULL DEFAULT 2,  -- 0=user, 1=trigger, 2=heartbeat
     source          TEXT    NOT NULL,             -- "user", "trigger", "heartbeat"
     content         TEXT    NOT NULL DEFAULT '',
-    reply_to        TEXT    NOT NULL DEFAULT '',  -- backend message ID to reply to
-    conversation_id TEXT    NOT NULL DEFAULT '',  -- room/channel ID for routing replies
-    message_id      TEXT    NOT NULL DEFAULT '',  -- incoming backend message ID
+    reply_to        TEXT    NOT NULL DEFAULT '',  -- Matrix event ID to reply to
+    conversation_id TEXT    NOT NULL DEFAULT '',  -- Matrix room ID for routing replies
+    message_id      TEXT    NOT NULL DEFAULT '',  -- incoming Matrix event ID
     is_group        BOOLEAN NOT NULL DEFAULT FALSE,
     created_at      TEXT    NOT NULL DEFAULT (strftime('%Y-%m-%dT%H:%M:%fZ', 'now'))
 );

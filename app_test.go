@@ -6,7 +6,7 @@ import (
 	"sync"
 	"testing"
 
-	"github.com/pinpox/opencrow/backend"
+	"github.com/pinpox/opencrow/matrix"
 )
 
 const (
@@ -15,15 +15,15 @@ const (
 	reactionEventID    = "$event"
 )
 
-// mockBackend records calls for testing.
-type mockBackend struct {
+// mockMatrix records Matrix calls for testing.
+type mockMatrix struct {
 	mu                    sync.Mutex
 	sentMessages          []sentMessage
 	sentFiles             []sentFile
 	typingCalls           []typingCall
 	resetCalls            []string
+	reactions             []reactionCall
 	systemPromptExtraText string
-	markdownFlavor        backend.MarkdownFlavor
 }
 
 type sentMessage struct {
@@ -47,13 +47,7 @@ type reactionCall struct {
 	emoji          string
 }
 
-type reactionMockBackend struct {
-	*mockBackend
-
-	reactions []reactionCall
-}
-
-func (m *reactionMockBackend) SendReaction(_ context.Context, conversationID, messageID, emoji string) error {
+func (m *mockMatrix) SendReaction(_ context.Context, conversationID, messageID, emoji string) error {
 	m.mu.Lock()
 	defer m.mu.Unlock()
 
@@ -62,11 +56,7 @@ func (m *reactionMockBackend) SendReaction(_ context.Context, conversationID, me
 	return nil
 }
 
-func (m *mockBackend) Run(_ context.Context) error { return nil }
-func (m *mockBackend) Stop()                       {}
-func (m *mockBackend) Close() error                { return nil }
-
-func (m *mockBackend) SendMessage(_ context.Context, conversationID string, text string, _ string) string {
+func (m *mockMatrix) SendMessage(_ context.Context, conversationID string, text string, _ string) string {
 	m.mu.Lock()
 	defer m.mu.Unlock()
 
@@ -75,7 +65,7 @@ func (m *mockBackend) SendMessage(_ context.Context, conversationID string, text
 	return ""
 }
 
-func (m *mockBackend) SendFile(_ context.Context, conversationID string, filePath string) error {
+func (m *mockMatrix) SendFile(_ context.Context, conversationID string, filePath string) error {
 	m.mu.Lock()
 	defer m.mu.Unlock()
 
@@ -84,42 +74,43 @@ func (m *mockBackend) SendFile(_ context.Context, conversationID string, filePat
 	return nil
 }
 
-func (m *mockBackend) SetTyping(_ context.Context, conversationID string, typing bool) {
+func (m *mockMatrix) SetTyping(_ context.Context, conversationID string, typing bool) {
 	m.mu.Lock()
 	defer m.mu.Unlock()
 
 	m.typingCalls = append(m.typingCalls, typingCall{conversationID, typing})
 }
 
-func (m *mockBackend) ResetConversation(_ context.Context, conversationID string) {
+func (m *mockMatrix) ResetConversation(_ context.Context, conversationID string) {
 	m.mu.Lock()
 	defer m.mu.Unlock()
 
 	m.resetCalls = append(m.resetCalls, conversationID)
 }
 
-func (m *mockBackend) SystemPromptExtra() string {
+func (m *mockMatrix) SystemPromptExtra() string {
 	return m.systemPromptExtraText
 }
 
-func (m *mockBackend) MarkdownFlavor() backend.MarkdownFlavor {
-	return m.markdownFlavor
+type testMatrix interface {
+	appMatrix
+	workerMatrix
 }
 
-// newTestApp creates a mockBackend + App wired together for testing.
-func newTestApp(t *testing.T) (*App, *mockBackend) {
+// newTestApp creates a mock Matrix client and App wired together for testing.
+func newTestApp(t *testing.T) (*App, *mockMatrix) {
 	t.Helper()
 
-	return newTestAppWithBackend(t, &mockBackend{})
+	return newTestAppWithMatrix(t, &mockMatrix{})
 }
 
-func newTestAppWithBackend(t *testing.T, mb *mockBackend) (*App, *mockBackend) {
+func newTestAppWithMatrix(t *testing.T, matrixClient *mockMatrix) (*App, *mockMatrix) {
 	t.Helper()
 
-	return newTestAppForBackend(t, mb), mb
+	return newTestAppForMatrix(t, matrixClient), matrixClient
 }
 
-func newTestAppForBackend(t *testing.T, b backend.Backend) *App {
+func newTestAppForMatrix(t *testing.T, matrixClient testMatrix) *App {
 	t.Helper()
 
 	ctx := context.Background()
@@ -127,9 +118,9 @@ func newTestAppForBackend(t *testing.T, b backend.Backend) *App {
 	inbox := newTestInboxWithDB(ctx, t, db)
 
 	worker := NewWorker(inbox, PiConfig{SessionDir: t.TempDir()}, "", "")
-	worker.SetBackend(b)
+	worker.SetMatrix(matrixClient)
 
-	app := NewApp(b, worker, inbox, db)
+	app := NewApp(matrixClient, worker, inbox, db)
 	worker.SetApp(app)
 
 	return app
@@ -137,7 +128,7 @@ func newTestAppForBackend(t *testing.T, b backend.Backend) *App {
 
 // sendCommand sends a command message from a default user to testRoom.
 func sendCommand(app *App, command string) {
-	app.HandleMessage(context.Background(), backend.Message{
+	app.HandleMessage(context.Background(), matrix.Message{
 		ConversationID: testRoom,
 		SenderID:       "@user:example.com",
 		Text:           command,
@@ -295,7 +286,7 @@ func TestApp_PromptEnqueuesInbox(t *testing.T) {
 
 	app, _ := newTestApp(t)
 
-	app.HandleMessage(context.Background(), backend.Message{
+	app.HandleMessage(context.Background(), matrix.Message{
 		ConversationID: testRoom,
 		SenderID:       "@user:example.com",
 		Text:           "hello world",
@@ -350,7 +341,7 @@ func TestApp_BuildPromptText_ReplyToUserMessage(t *testing.T) {
 	app.outbox.Put(ctx, "conv1", "user-msg-123", "original question")
 
 	// Now simulate the user replying to their own message.
-	replyMsg := backend.Message{
+	replyMsg := matrix.Message{
 		ConversationID: "conv1",
 		SenderID:       "user1",
 		Text:           "follow-up",
@@ -381,7 +372,7 @@ func TestBuildContextTags(t *testing.T) {
 	t.Run("no enrichment fields", func(t *testing.T) {
 		t.Parallel()
 
-		msg := backend.Message{Text: "hello"}
+		msg := matrix.Message{Text: "hello"}
 		got := buildContextTags(msg)
 		// IsDM is always emitted, even when false.
 		want := "<is-dm>false</is-dm>"
@@ -393,7 +384,7 @@ func TestBuildContextTags(t *testing.T) {
 	t.Run("all fields set", func(t *testing.T) {
 		t.Parallel()
 
-		msg := backend.Message{
+		msg := matrix.Message{
 			ConversationID: "!room:matrix.org",
 			SenderID:       "@alice:matrix.org",
 			SenderName:     "Alice",
@@ -422,7 +413,7 @@ func TestBuildContextTags(t *testing.T) {
 	t.Run("partial fields — only universal fields set", func(t *testing.T) {
 		t.Parallel()
 
-		msg := backend.Message{
+		msg := matrix.Message{
 			ConversationID: "abcdef1234",
 			SenderID:       "abcdef1234",
 			IsDM:           true,
@@ -452,7 +443,7 @@ func TestBuildContextTags(t *testing.T) {
 	t.Run("is-dm always present", func(t *testing.T) {
 		t.Parallel()
 
-		msg := backend.Message{Text: "hello"}
+		msg := matrix.Message{Text: "hello"}
 		got := buildContextTags(msg)
 
 		if !strings.Contains(got, "<is-dm>") {
@@ -463,7 +454,7 @@ func TestBuildContextTags(t *testing.T) {
 	t.Run("room-name and room-size omitted when is-dm is true", func(t *testing.T) {
 		t.Parallel()
 
-		msg := backend.Message{
+		msg := matrix.Message{
 			ConversationID: "!dm:matrix.org",
 			SenderID:       "@bob:matrix.org",
 			RoomName:       "My DM",
@@ -486,7 +477,7 @@ func TestBuildContextTags(t *testing.T) {
 	t.Run("tag contents are escaped", func(t *testing.T) {
 		t.Parallel()
 
-		msg := backend.Message{
+		msg := matrix.Message{
 			ConversationID: "!room<&>:matrix.org",
 			SenderID:       "@alice<&>:matrix.org",
 			SenderName:     "Alice <admin> & \"owner\"",
@@ -516,7 +507,7 @@ func TestBuildPromptText_ContextTags(t *testing.T) {
 	app, _ := newTestApp(t)
 	ctx := context.Background()
 
-	msg := backend.Message{
+	msg := matrix.Message{
 		ConversationID: "!room:matrix.org",
 		SenderID:       "@alice:matrix.org",
 		Text:           "hello there",
@@ -540,35 +531,29 @@ func TestBuildPromptText_ContextTags(t *testing.T) {
 	}
 }
 
-func TestBuildPromptText_MessageIDOnlyForReactionBackend(t *testing.T) {
+func TestBuildPromptText_IncludesMessageID(t *testing.T) {
 	t.Parallel()
 
-	msg := backend.Message{
+	msg := matrix.Message{
 		ConversationID: "!room:matrix.org",
 		SenderID:       "@alice:matrix.org",
 		MessageID:      "$event<&>",
 		Text:           "hello",
 	}
 
-	unsupported, _ := newTestApp(t)
-	if got := unsupported.buildPromptText(context.Background(), msg); strings.Contains(got, "<message-id>") {
-		t.Errorf("unsupported backend prompt contains message-id: %q", got)
-	}
+	app, _ := newTestApp(t)
 
-	rb := &reactionMockBackend{mockBackend: &mockBackend{}}
-	supported := newTestAppForBackend(t, rb)
-
-	got := supported.buildPromptText(context.Background(), msg)
+	got := app.buildPromptText(context.Background(), msg)
 	if !strings.Contains(got, "<message-id>$event&lt;&amp;&gt;</message-id>") {
-		t.Errorf("reaction backend prompt missing escaped message-id, got: %q", got)
+		t.Errorf("prompt missing escaped message-id, got: %q", got)
 	}
 }
 
 func TestApp_SendReactionValidatesConversationAndMessage(t *testing.T) {
 	t.Parallel()
 
-	rb := &reactionMockBackend{mockBackend: &mockBackend{}}
-	app := newTestAppForBackend(t, rb)
+	matrixClient := &mockMatrix{}
+	app := newTestAppForMatrix(t, matrixClient)
 	ctx := context.Background()
 
 	app.outbox.Put(ctx, reactionSourceRoom, reactionEventID, "hello")
@@ -576,14 +561,14 @@ func TestApp_SendReactionValidatesConversationAndMessage(t *testing.T) {
 	app.sendReaction(ctx, "!other:matrix.org", reactionRequest{messageID: reactionEventID, emoji: "❤️"})
 	app.sendReaction(ctx, reactionSourceRoom, reactionRequest{messageID: "$unknown", emoji: "❤️"})
 
-	rb.mu.Lock()
-	defer rb.mu.Unlock()
+	matrixClient.mu.Lock()
+	defer matrixClient.mu.Unlock()
 
-	if len(rb.reactions) != 1 {
-		t.Fatalf("reactions = %+v, want one", rb.reactions)
+	if len(matrixClient.reactions) != 1 {
+		t.Fatalf("reactions = %+v, want one", matrixClient.reactions)
 	}
 
-	got := rb.reactions[0]
+	got := matrixClient.reactions[0]
 	if got.conversationID != reactionSourceRoom || got.messageID != reactionEventID || got.emoji != "👍" {
 		t.Errorf("reaction = %+v", got)
 	}
@@ -593,7 +578,7 @@ func TestApp_EnqueuesMessageMetadata(t *testing.T) {
 	t.Parallel()
 
 	app, _ := newTestApp(t)
-	app.HandleMessage(t.Context(), backend.Message{
+	app.HandleMessage(t.Context(), matrix.Message{
 		ConversationID: "!room:matrix.org",
 		MessageID:      "$metadata-event",
 		Text:           "hello",
@@ -661,7 +646,7 @@ func TestApp_SystemPrompt(t *testing.T) {
 		t.Run(tc.name, func(t *testing.T) {
 			t.Parallel()
 
-			app, _ := newTestAppWithBackend(t, &mockBackend{systemPromptExtraText: tc.extra})
+			app, _ := newTestAppWithMatrix(t, &mockMatrix{systemPromptExtraText: tc.extra})
 
 			if got := app.systemPrompt("Base prompt"); got != tc.want {
 				t.Errorf("systemPrompt = %q, want %q", got, tc.want)
@@ -673,20 +658,17 @@ func TestApp_SystemPrompt(t *testing.T) {
 func TestFormatToolCall(t *testing.T) {
 	t.Parallel()
 
-	bash := ToolCallEvent{ToolName: "bash", Args: map[string]any{"command": "ls -la"}}
-	read := ToolCallEvent{ToolName: "read", Args: map[string]any{"path": "/etc/hosts"}}
-
-	check := func(evt ToolCallEvent, flavor backend.MarkdownFlavor, want string) {
-		t.Helper()
-
-		if got := formatToolCall(evt, flavor); got != want {
-			t.Errorf("formatToolCall(%s, %d) = %q, want %q", evt.ToolName, flavor, got, want)
-		}
+	cases := []struct {
+		event ToolCallEvent
+		want  string
+	}{
+		{ToolCallEvent{ToolName: "bash", Args: map[string]any{"command": "ls -la"}}, "🔧\n```sh\nls -la\n```"},
+		{ToolCallEvent{ToolName: "read", Args: map[string]any{"path": "/etc/hosts"}}, "📄 reading `/etc/hosts`"},
 	}
 
-	check(bash, backend.MarkdownFull, "🔧\n```sh\nls -la\n```")
-	check(bash, backend.MarkdownBasic, "🔧\n```\nls -la\n```")
-	check(bash, backend.MarkdownNone, "🔧 ls -la")
-	check(read, backend.MarkdownBasic, "📄 reading `/etc/hosts`")
-	check(read, backend.MarkdownNone, "📄 reading /etc/hosts")
+	for _, tc := range cases {
+		if got := formatToolCall(tc.event); got != tc.want {
+			t.Errorf("formatToolCall(%s) = %q, want %q", tc.event.ToolName, got, tc.want)
+		}
+	}
 }

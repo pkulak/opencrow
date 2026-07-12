@@ -36,7 +36,7 @@ func NewInboxStore(ctx context.Context, db *sql.DB) (*InboxStore, error) {
 	return &InboxStore{queries: queries}, nil
 }
 
-// Enqueue inserts an item without backend message metadata.
+// Enqueue inserts an item without Matrix event metadata.
 func (s *InboxStore) Enqueue(ctx context.Context, priority int64, source, content, replyTo, conversationID string) error {
 	return s.enqueue(ctx, EnqueueInboxParams{
 		Priority:       priority,
@@ -47,8 +47,8 @@ func (s *InboxStore) Enqueue(ctx context.Context, priority int64, source, conten
 	})
 }
 
-// EnqueueUser inserts a user message with the metadata needed for
-// backend-specific processing indicators.
+// EnqueueUser inserts a user message with the Matrix metadata needed for
+// reactions and processing indicators.
 func (s *InboxStore) EnqueueUser(ctx context.Context, content, replyTo, conversationID, messageID string, isGroup bool) error {
 	return s.enqueue(ctx, EnqueueInboxParams{
 		Priority:       PriorityUser,
