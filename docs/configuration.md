@@ -68,7 +68,8 @@ two things happen:
 2. the bot accepts all allowed Matrix invites instead of claiming just one room
 
 This does **not** create separate sessions per room. The bot still runs as one
-shared agent with one shared session and memory across all rooms and DMs.
+shared agent with one shared session and conversation context across all rooms and
+DMs.
 Commands like `!restart`, `!stop`, and `!compact` still act on that shared
 agent.
 

@@ -151,8 +151,8 @@ services.opencrow = {
   };
 
   extensions = {
-    # Cross-session memory via semantic search
-    memory = true;
+    # Structured one-shot reminder tools
+    reminders = true;
   };
 };
 ```

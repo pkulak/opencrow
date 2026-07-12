@@ -76,13 +76,13 @@ let
           All enabled extensions are written into a generated settings.json
           that pi reads from PI_CODING_AGENT_DIR.
 
-          Bundled extensions: `memory` (cross-session recall via sediment),
-          `reminders` (remind_at/list/cancel tools backed by opencrow.db).
+          Bundled extension: `reminders` (remind_at/list/cancel tools backed
+          by opencrow.db).
         '';
         example = lib.literalExpression ''
           {
-            # Enable the bundled memory extension
-            memory = true;
+            # Enable the bundled reminders extension
+            reminders = true;
             # Custom extension from a local path
             my-ext = ./extensions/my-ext.ts;
           }
@@ -270,12 +270,6 @@ let
               default = "";
               description = "Heartbeat interval (Go duration, e.g. '30m'). Empty disables heartbeat; the reminder dispatcher still runs.";
             };
-
-            SEDIMENT_DB = lib.mkOption {
-              type = lib.types.str;
-              default = "";
-              description = "Path to the sediment database. Set automatically when the memory extension is enabled via the extensions option.";
-            };
           };
         };
         default = { };
@@ -434,10 +428,7 @@ let
               environment = {
                 HOME = stateDir;
               }
-              // lib.filterAttrs (_: v: v != "") icfg.environment
-              // lib.optionalAttrs (icfg.extensions.memory or false == true) {
-                SEDIMENT_DB = "${stateDir}/sediment";
-              };
+              // lib.filterAttrs (_: v: v != "") icfg.environment;
 
               serviceConfig = {
                 EnvironmentFile = lib.imap0 (

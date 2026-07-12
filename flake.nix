@@ -29,9 +29,7 @@
         in
         {
           opencrow = pkgs.callPackage ./nix/package.nix { };
-          extension-memory = pkgs.callPackage ./nix/extension-memory.nix { };
           extension-reminders = pkgs.callPackage ./nix/extension-reminders.nix { };
-          sediment = pkgs.callPackage ./nix/sediment { };
           default = self.packages.${system}.opencrow;
         }
       );

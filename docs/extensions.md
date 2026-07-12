@@ -13,7 +13,7 @@ pass a path for a custom extension:
 
 ```nix
 services.opencrow.extensions = {
-  memory = true;                     # packaged extension (resolved from flake)
+  reminders = true;                  # packaged extension (resolved from flake)
   my-ext = ./extensions/my-ext.ts;   # custom extension
 };
 ```
@@ -33,23 +33,18 @@ services.opencrow.piSettings = {
 
 ## Packaged extensions
 
-### memory
+### reminders
 
-Cross-session recall using [sediment](https://github.com/rendro/sediment), a
-local semantic vector store. Conversations and compaction summaries are stored
-automatically; relevant memories are recalled and injected into context before
-each prompt. The extension also registers a `memory_search` tool the LLM can
-use explicitly.
-
-The sediment binary is patched into the extension at build time — no need to add
-it to `extraPackages`. `SEDIMENT_DB` defaults to `/var/lib/opencrow/sediment`
-when the extension is enabled.
+Structured tools for scheduling, listing, and cancelling one-shot reminders.
+The SQLite binary is patched into the extension at build time, so it does not
+need to be added to `extraPackages`.
 
 ```nix
-services.opencrow.extensions.memory = true;
+services.opencrow.extensions.reminders = true;
 ```
 
-See [`extensions/memory/`](../extensions/memory/) for the source.
+See [Heartbeat & Reminders](heartbeat.md) for usage details and
+[`extensions/reminders/`](../extensions/reminders/) for the source.
 
 ## Writing an extension
 
