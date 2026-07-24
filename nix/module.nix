@@ -422,6 +422,7 @@ let
                 icfg.piPackage
                 pkgs.bash
                 pkgs.coreutils
+                pkgs.ffmpeg
               ]
               ++ icfg.extraPackages;
 

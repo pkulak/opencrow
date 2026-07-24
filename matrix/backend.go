@@ -276,8 +276,14 @@ func (b *Backend) SendFile(ctx context.Context, conversationID string, filePath 
 		MimeType: contentType,
 		Size:     len(data),
 	}
-	if msgType == event.MsgVideo {
+	//exhaustive:ignore Only visual media types need enrichment.
+	switch msgType {
+	case event.MsgImage:
+		b.enrichImageInfo(ctx, filePath, fileInfo)
+	case event.MsgVideo:
 		b.enrichVideoInfo(ctx, filePath, fileInfo)
+	default:
+		// Other media types don't have visual thumbnails.
 	}
 
 	content := &event.MessageEventContent{

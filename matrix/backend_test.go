@@ -18,6 +18,8 @@ import (
 	"maunium.net/go/mautrix/id"
 )
 
+const testThumbnailURI = "mxc://example.org/thumbnail"
+
 func TestSendReaction(t *testing.T) {
 	t.Parallel()
 
@@ -74,14 +76,14 @@ func TestSendReaction(t *testing.T) {
 	}
 }
 
-type videoSendCapture struct {
+type mediaSendCapture struct {
 	t           *testing.T
 	uploadTypes []string
 	uploadNames []string
 	sentContent map[string]any
 }
 
-func (capture *videoSendCapture) ServeHTTP(w http.ResponseWriter, r *http.Request) {
+func (capture *mediaSendCapture) ServeHTTP(w http.ResponseWriter, r *http.Request) {
 	w.Header().Set("Content-Type", "application/json")
 
 	switch {
@@ -89,9 +91,9 @@ func (capture *videoSendCapture) ServeHTTP(w http.ResponseWriter, r *http.Reques
 		capture.uploadTypes = append(capture.uploadTypes, r.Header.Get("Content-Type"))
 		capture.uploadNames = append(capture.uploadNames, r.URL.Query().Get("filename"))
 
-		uri := "mxc://example.org/video"
+		uri := "mxc://example.org/media"
 		if len(capture.uploadTypes) == 2 {
-			uri = "mxc://example.org/thumbnail"
+			uri = testThumbnailURI
 		}
 
 		writeJSON(capture.t, w, map[string]string{"content_uri": uri})
@@ -100,7 +102,7 @@ func (capture *videoSendCapture) ServeHTTP(w http.ResponseWriter, r *http.Reques
 			capture.t.Errorf("decoding sent event: %v", err)
 		}
 
-		_, _ = w.Write([]byte(`{"event_id":"$video"}`))
+		_, _ = w.Write([]byte(`{"event_id":"$media"}`))
 	default:
 		capture.t.Errorf("unexpected request: %s %s", r.Method, r.URL.Path)
 		http.NotFound(w, r)
@@ -116,13 +118,82 @@ func TestSendFileIncludesVideoThumbnailAndMetadata(t *testing.T) { //nolint:para
 	}
 
 	thumbnailPath := filepath.Join(tempDir, "thumbnail.jpg")
-	writeTestThumbnail(t, thumbnailPath)
-	installFakeVideoTools(t, tempDir, thumbnailPath)
+	writeTestThumbnail(t, thumbnailPath, 320, 180)
+	installFakeMediaTools(
+		t,
+		tempDir,
+		thumbnailPath,
+		`{"streams":[{"width":636,"height":360}],"format":{"duration":"12.5"}}`,
+		videoThumbnailFilter,
+	)
 
-	capture := &videoSendCapture{t: t}
+	capture := sendTestMedia(t, videoPath)
+
+	assertVideoUploads(t, capture)
+	assertVideoEvent(t, capture.sentContent)
+}
+
+func TestSendFileIncludesImageThumbnailAndMetadata(t *testing.T) { //nolint:paralleltest // modifies PATH to install fake media tools
+	tempDir := t.TempDir()
+	imagePath := filepath.Join(tempDir, "portrait.png")
+
+	if err := os.WriteFile(imagePath, []byte("image"), 0o600); err != nil {
+		t.Fatal(err)
+	}
+
+	thumbnailPath := filepath.Join(tempDir, "thumbnail.jpg")
+	writeTestThumbnail(t, thumbnailPath, 320, 640)
+	installFakeMediaTools(
+		t,
+		tempDir,
+		thumbnailPath,
+		`{"streams":[{"width":320,"height":640}],"format":{}}`,
+		imageThumbnailFilter,
+	)
+
+	capture := sendTestMedia(t, imagePath)
+
+	assertImageUploads(t, capture)
+	assertImageEvent(t, capture.sentContent)
+}
+
+func TestSendFileStillSendsImageWhenThumbnailFails(t *testing.T) { //nolint:paralleltest // modifies PATH to install fake media tools
+	tempDir := t.TempDir()
+	imagePath := filepath.Join(tempDir, "image.png")
+
+	if err := os.WriteFile(imagePath, []byte("image"), 0o600); err != nil {
+		t.Fatal(err)
+	}
+
+	installFakeMediaTools(
+		t,
+		tempDir,
+		filepath.Join(tempDir, "missing-thumbnail.jpg"),
+		`{"streams":[{"width":640,"height":320}],"format":{}}`,
+		imageThumbnailFilter,
+	)
+
+	capture := sendTestMedia(t, imagePath)
+	if len(capture.uploadTypes) != 1 {
+		t.Fatalf("upload content types = %v, want original image only", capture.uploadTypes)
+	}
+
+	info, ok := capture.sentContent["info"].(map[string]any)
+	if !ok {
+		t.Fatalf("info = %#v", capture.sentContent["info"])
+	}
+
+	if info["w"] != float64(640) || info["h"] != float64(320) || info["thumbnail_url"] != nil {
+		t.Errorf("image metadata = %#v", info)
+	}
+}
+
+func sendTestMedia(t *testing.T, filePath string) *mediaSendCapture {
+	t.Helper()
+
+	capture := &mediaSendCapture{t: t}
 	server := httptest.NewServer(capture)
-
-	defer server.Close()
+	t.Cleanup(server.Close)
 
 	client, err := mautrix.NewClient(server.URL, id.UserID("@bot:example.org"), "token")
 	if err != nil {
@@ -130,15 +201,14 @@ func TestSendFileIncludesVideoThumbnailAndMetadata(t *testing.T) { //nolint:para
 	}
 
 	backend := &Backend{client: client}
-	if err := backend.SendFile(context.Background(), "!room:example.org", videoPath); err != nil {
+	if err := backend.SendFile(context.Background(), "!room:example.org", filePath); err != nil {
 		t.Fatal(err)
 	}
 
-	assertVideoUploads(t, capture)
-	assertVideoEvent(t, capture.sentContent)
+	return capture
 }
 
-func writeTestThumbnail(t *testing.T, path string) {
+func writeTestThumbnail(t *testing.T, path string, width, height int) {
 	t.Helper()
 
 	file, err := os.Create(path)
@@ -146,7 +216,7 @@ func writeTestThumbnail(t *testing.T, path string) {
 		t.Fatal(err)
 	}
 
-	if err := jpeg.Encode(file, image.NewRGBA(image.Rect(0, 0, 320, 180)), nil); err != nil {
+	if err := jpeg.Encode(file, image.NewRGBA(image.Rect(0, 0, width, height)), nil); err != nil {
 		file.Close()
 		t.Fatal(err)
 	}
@@ -156,7 +226,7 @@ func writeTestThumbnail(t *testing.T, path string) {
 	}
 }
 
-func installFakeVideoTools(t *testing.T, tempDir, thumbnailPath string) {
+func installFakeMediaTools(t *testing.T, tempDir, thumbnailPath, metadata, filter string) {
 	t.Helper()
 
 	binDir := filepath.Join(tempDir, "bin")
@@ -165,14 +235,24 @@ func installFakeVideoTools(t *testing.T, tempDir, thumbnailPath string) {
 	}
 
 	writeExecutable(t, filepath.Join(binDir, "ffprobe"), `#!/bin/sh
-printf '%s\n' '{"streams":[{"width":636,"height":360}],"format":{"duration":"12.5"}}'
+printf '%s\n' "$FAKE_MEDIA_METADATA"
 `)
 	writeExecutable(t, filepath.Join(binDir, "ffmpeg"), `#!/bin/sh
-cat "$FAKE_VIDEO_THUMBNAIL"
+while [ "$#" -gt 0 ]; do
+  if [ "$1" = "-vf" ]; then
+    shift
+    test "$1" = "$FAKE_MEDIA_FILTER" || exit 1
+    break
+  fi
+  shift
+done
+cat "$FAKE_MEDIA_THUMBNAIL"
 `)
 
 	t.Setenv("PATH", binDir+string(os.PathListSeparator)+os.Getenv("PATH"))
-	t.Setenv("FAKE_VIDEO_THUMBNAIL", thumbnailPath)
+	t.Setenv("FAKE_MEDIA_METADATA", metadata)
+	t.Setenv("FAKE_MEDIA_FILTER", filter)
+	t.Setenv("FAKE_MEDIA_THUMBNAIL", thumbnailPath)
 }
 
 func writeExecutable(t *testing.T, path, contents string) {
@@ -183,18 +263,34 @@ func writeExecutable(t *testing.T, path, contents string) {
 	}
 }
 
-func assertVideoUploads(t *testing.T, capture *videoSendCapture) {
+func assertVideoUploads(t *testing.T, capture *mediaSendCapture) {
 	t.Helper()
 
 	if len(capture.uploadTypes) != 2 {
 		t.Fatalf("upload content types = %v, want video and thumbnail", capture.uploadTypes)
 	}
 
-	if capture.uploadTypes[0] != "video/mp4" || capture.uploadTypes[1] != "image/jpeg" {
+	if capture.uploadTypes[0] != "video/mp4" || capture.uploadTypes[1] != thumbnailContentType {
 		t.Errorf("upload content types = %v", capture.uploadTypes)
 	}
 
 	if capture.uploadNames[0] != "clip.mp4" || capture.uploadNames[1] != "clip-thumbnail.jpg" {
+		t.Errorf("upload filenames = %v", capture.uploadNames)
+	}
+}
+
+func assertImageUploads(t *testing.T, capture *mediaSendCapture) {
+	t.Helper()
+
+	if len(capture.uploadTypes) != 2 {
+		t.Fatalf("upload content types = %v, want image and thumbnail", capture.uploadTypes)
+	}
+
+	if capture.uploadTypes[0] != "image/png" || capture.uploadTypes[1] != thumbnailContentType {
+		t.Errorf("upload content types = %v", capture.uploadTypes)
+	}
+
+	if capture.uploadNames[0] != "portrait.png" || capture.uploadNames[1] != "portrait-thumbnail.jpg" {
 		t.Errorf("upload filenames = %v", capture.uploadNames)
 	}
 }
@@ -215,14 +311,37 @@ func assertVideoEvent(t *testing.T, sentContent map[string]any) {
 		t.Errorf("video metadata = %#v", info)
 	}
 
-	if info["thumbnail_url"] != "mxc://example.org/thumbnail" {
+	if info["thumbnail_url"] != testThumbnailURI {
 		t.Errorf("thumbnail_url = %v", info["thumbnail_url"])
 	}
 
-	assertThumbnailInfo(t, info["thumbnail_info"])
+	assertThumbnailInfo(t, info["thumbnail_info"], 320, 180)
 }
 
-func assertThumbnailInfo(t *testing.T, value any) {
+func assertImageEvent(t *testing.T, sentContent map[string]any) {
+	t.Helper()
+
+	if sentContent["msgtype"] != "m.image" {
+		t.Errorf("msgtype = %v, want m.image", sentContent["msgtype"])
+	}
+
+	info, ok := sentContent["info"].(map[string]any)
+	if !ok {
+		t.Fatalf("info = %#v", sentContent["info"])
+	}
+
+	if info["w"] != float64(320) || info["h"] != float64(640) {
+		t.Errorf("image metadata = %#v", info)
+	}
+
+	if info["thumbnail_url"] != testThumbnailURI {
+		t.Errorf("thumbnail_url = %v", info["thumbnail_url"])
+	}
+
+	assertThumbnailInfo(t, info["thumbnail_info"], 320, 640)
+}
+
+func assertThumbnailInfo(t *testing.T, value any, width, height int) {
 	t.Helper()
 
 	thumbnailInfo, ok := value.(map[string]any)
@@ -230,7 +349,8 @@ func assertThumbnailInfo(t *testing.T, value any) {
 		t.Fatalf("thumbnail_info = %#v", value)
 	}
 
-	if thumbnailInfo["mimetype"] != "image/jpeg" || thumbnailInfo["w"] != float64(320) || thumbnailInfo["h"] != float64(180) {
+	if thumbnailInfo["mimetype"] != thumbnailContentType ||
+		thumbnailInfo["w"] != float64(width) || thumbnailInfo["h"] != float64(height) {
 		t.Errorf("thumbnail metadata = %#v", thumbnailInfo)
 	}
 }
