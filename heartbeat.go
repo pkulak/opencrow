@@ -166,10 +166,13 @@ func shouldSuppressReply(reply, source string) bool {
 		return true
 	}
 
-	if source != sourceHeartbeat && strings.TrimSpace(reply) == "NO_REPLY" {
-		slog.Info(source + ": NO_REPLY, suppressing")
+	if source != sourceHeartbeat {
+		firstLine, _, _ := strings.Cut(strings.TrimSpace(reply), "\n")
+		if strings.TrimSpace(firstLine) == "NO_REPLY" {
+			slog.Info(source + ": NO_REPLY, suppressing")
 
-		return true
+			return true
+		}
 	}
 
 	if reply == "" {

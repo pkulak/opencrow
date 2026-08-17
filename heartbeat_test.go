@@ -58,13 +58,16 @@ func TestShouldSuppressReply(t *testing.T) {
 		{"heartbeat ok for trigger", "HEARTBEAT_OK", sourceTrigger, false},
 		{"heartbeat ok for user", "HEARTBEAT_OK", sourceUser, false},
 
-		// NO_REPLY only works as an exact trigger/user sentinel.
+		// NO_REPLY works as a first-line trigger/user sentinel so accidental
+		// trailing model output does not turn silence into a public reply.
 		{"no reply for trigger", "NO_REPLY", sourceTrigger, true},
 		{"no reply for user", "NO_REPLY", sourceUser, true},
 		{"no reply with whitespace", "\nNO_REPLY\t", sourceUser, true},
-		{"no reply in text for trigger", "nothing here NO_REPLY", sourceTrigger, false},
+		{"no reply before trailing output", "NO_REPLY\n\ninternal reasoning", sourceUser, true},
+		{"no reply later in text", "nothing here\nNO_REPLY", sourceTrigger, false},
+		{"no reply on first line with other text", "NO_REPLY is documented", sourceUser, false},
 		{"no reply in user explanation", "In group chats I usually output `NO_REPLY`.", sourceUser, false},
-		{"no reply for heartbeat", "NO_REPLY", sourceHeartbeat, false},
+		{"no reply for heartbeat", "NO_REPLY\ninternal reasoning", sourceHeartbeat, false},
 
 		// Normal replies are never suppressed.
 		{"normal trigger reply", "You have 3 new emails", sourceTrigger, false},
