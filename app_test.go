@@ -2,9 +2,11 @@ package main
 
 import (
 	"context"
+	"regexp"
 	"strings"
 	"sync"
 	"testing"
+	"time"
 
 	"github.com/pinpox/opencrow/matrix"
 )
@@ -350,7 +352,7 @@ func TestApp_BuildPromptText_ReplyToUserMessage(t *testing.T) {
 		ReplyToID:      "user-msg-123",
 	}
 
-	got := app.buildPromptText(ctx, replyMsg)
+	got := app.buildPromptText(ctx, replyMsg, nil)
 
 	// Should contain the reply-quote context and original text.
 	if !strings.Contains(got, `[user replied to message: "original question"]`) {
@@ -515,7 +517,7 @@ func TestBuildPromptText_ContextTags(t *testing.T) {
 		IsDM:           false,
 	}
 
-	got := app.buildPromptText(ctx, msg)
+	got := app.buildPromptText(ctx, msg, nil)
 
 	// Should contain context tags followed by a blank line then the text.
 	if !strings.Contains(got, "<from-id>@alice:matrix.org</from-id>") {
@@ -544,7 +546,7 @@ func TestBuildPromptText_IncludesMessageID(t *testing.T) {
 
 	app, _ := newTestApp(t)
 
-	got := app.buildPromptText(context.Background(), msg)
+	got := app.buildPromptText(context.Background(), msg, nil)
 	if !strings.Contains(got, "<message-id>$event&lt;&amp;&gt;</message-id>") {
 		t.Errorf("prompt missing escaped message-id, got: %q", got)
 	}
@@ -671,5 +673,241 @@ func TestFormatToolCall(t *testing.T) {
 		if got := formatToolCall(tc.event); got != tc.want {
 			t.Errorf("formatToolCall(%s) = %q, want %q", tc.event.ToolName, got, tc.want)
 		}
+	}
+}
+
+var groupTriggerTestRe = regexp.MustCompile(`(?i)\b(barnaby|barn)\b`)
+
+func TestApp_GroupFilter_UnaddressedChatBufferedAndDropped(t *testing.T) {
+	t.Parallel()
+
+	app, _ := newTestApp(t)
+	app.SetGroupTriggerRegex(groupTriggerTestRe)
+
+	ctx := t.Context()
+
+	msg := matrix.Message{
+		ConversationID: "!family:kulak.us",
+		SenderID:       "@gwen:kulak.us",
+		SenderName:     "Gwen",
+		Text:           "Did you know dogs can't look up?",
+		IsDM:           false,
+	}
+	app.HandleMessage(ctx, msg)
+
+	count, err := app.inbox.Count(ctx)
+	if err != nil {
+		t.Fatal(err)
+	}
+
+	if count != 0 {
+		t.Errorf("inbox count = %d, want 0", count)
+	}
+
+	app.mu.Lock()
+	st := app.filterStates["!family:kulak.us"]
+
+	if st == nil || len(st.bufferedChat) != 1 {
+		t.Fatalf("buffered chat length = %v, want 1", st)
+	}
+
+	if st.bufferedChat[0].sender != "Gwen" || st.bufferedChat[0].text != "Did you know dogs can't look up?" {
+		t.Errorf("buffered message = %+v", st.bufferedChat[0])
+	}
+	app.mu.Unlock()
+}
+
+func TestApp_GroupFilter_TriggerPrependsBufferAndClearsIt(t *testing.T) {
+	t.Parallel()
+
+	app, _ := newTestApp(t)
+	app.SetGroupTriggerRegex(groupTriggerTestRe)
+
+	ctx := t.Context()
+
+	// 1. Send unaddressed chat
+	app.HandleMessage(ctx, matrix.Message{
+		ConversationID: "!family:kulak.us",
+		SenderID:       "@gwen:kulak.us",
+		SenderName:     "Gwen",
+		Text:           "Dogs can't look up.",
+		IsDM:           false,
+	})
+
+	// 2. Send trigger message
+	app.HandleMessage(ctx, matrix.Message{
+		ConversationID: "!family:kulak.us",
+		SenderID:       "@phil:kulak.us",
+		SenderName:     "Phil",
+		Text:           "Barn, is that true?",
+		IsDM:           false,
+	})
+
+	count, err := app.inbox.Count(ctx)
+	if err != nil {
+		t.Fatal(err)
+	}
+
+	if count != 1 {
+		t.Fatalf("inbox count = %d, want 1", count)
+	}
+
+	item, err := app.inbox.Dequeue(ctx)
+	if err != nil {
+		t.Fatal(err)
+	}
+
+	if !strings.Contains(item.Content, "<recent-room-messages>") {
+		t.Errorf("item.Content missing <recent-room-messages>, got: %q", item.Content)
+	}
+
+	if !strings.Contains(item.Content, "Gwen: Dogs can&#39;t look up.") {
+		t.Errorf("item.Content missing Gwen's buffered message, got: %q", item.Content)
+	}
+
+	if !strings.Contains(item.Content, "Barn, is that true?") {
+		t.Errorf("item.Content missing prompt text, got: %q", item.Content)
+	}
+
+	// Buffer should now be cleared
+	app.mu.Lock()
+	st := app.filterStates["!family:kulak.us"]
+
+	if len(st.bufferedChat) != 0 {
+		t.Errorf("bufferedChat = %d, want 0 after flush", len(st.bufferedChat))
+	}
+	app.mu.Unlock()
+}
+
+func TestApp_GroupFilter_FollowUpWithinWindow(t *testing.T) {
+	t.Parallel()
+
+	app, _ := newTestApp(t)
+	app.SetGroupTriggerRegex(groupTriggerTestRe)
+
+	ctx := t.Context()
+
+	// Simulate bot speaking in room
+	app.recordAgentActivity("!family:kulak.us")
+
+	// User follows up 1 minute later without mentioning Barn
+	app.HandleMessage(ctx, matrix.Message{
+		ConversationID: "!family:kulak.us",
+		SenderID:       "@phil:kulak.us",
+		SenderName:     "Phil",
+		Text:           "What about cats?",
+		IsDM:           false,
+	})
+
+	count, err := app.inbox.Count(ctx)
+	if err != nil {
+		t.Fatal(err)
+	}
+
+	if count != 1 {
+		t.Fatalf("inbox count = %d, want 1", count)
+	}
+}
+
+func TestApp_GroupFilter_NextMessageAllowed(t *testing.T) {
+	t.Parallel()
+
+	app, _ := newTestApp(t)
+	app.SetGroupTriggerRegex(groupTriggerTestRe)
+
+	ctx := t.Context()
+
+	// Bot spoke 10 minutes ago, but nobody has spoken since
+	app.mu.Lock()
+	st := app.getOrCreateFilterState("!family:kulak.us")
+	st.lastAgentMessageAt = time.Now().Add(-10 * time.Minute)
+	st.lastSenderIsAgent = true
+	app.mu.Unlock()
+
+	// Immediate next message from user arrives (no regex match)
+	app.HandleMessage(ctx, matrix.Message{
+		ConversationID: "!family:kulak.us",
+		SenderID:       "@phil:kulak.us",
+		SenderName:     "Phil",
+		Text:           "Thanks!",
+		IsDM:           false,
+	})
+
+	count, err := app.inbox.Count(ctx)
+	if err != nil {
+		t.Fatal(err)
+	}
+
+	if count != 1 {
+		t.Fatalf("inbox count = %d, want 1 for next message", count)
+	}
+
+	// Second message arrives (still no regex match, and no longer immediate next message)
+	app.HandleMessage(ctx, matrix.Message{
+		ConversationID: "!family:kulak.us",
+		SenderID:       "@gwen:kulak.us",
+		SenderName:     "Gwen",
+		Text:           "Who is cooking tonight?",
+		IsDM:           false,
+	})
+
+	count2, err := app.inbox.Count(ctx)
+	if err != nil {
+		t.Fatal(err)
+	}
+
+	if count2 != 1 {
+		t.Errorf("inbox count = %d, want still 1 (second message dropped)", count2)
+	}
+}
+
+func TestApp_GroupFilter_DMNeverFiltered(t *testing.T) {
+	t.Parallel()
+
+	app, _ := newTestApp(t)
+	app.SetGroupTriggerRegex(groupTriggerTestRe)
+
+	ctx := t.Context()
+
+	app.HandleMessage(ctx, matrix.Message{
+		ConversationID: "!dm:kulak.us",
+		SenderID:       "@phil:kulak.us",
+		SenderName:     "Phil",
+		Text:           "Random chatter without name",
+		IsDM:           true,
+	})
+
+	count, err := app.inbox.Count(ctx)
+	if err != nil {
+		t.Fatal(err)
+	}
+
+	if count != 1 {
+		t.Errorf("inbox count = %d, want 1 for DM", count)
+	}
+}
+
+func TestApp_GroupFilter_NoRegexNoFilter(t *testing.T) {
+	t.Parallel()
+
+	app, _ := newTestApp(t)
+
+	ctx := t.Context()
+
+	app.HandleMessage(ctx, matrix.Message{
+		ConversationID: "!group:kulak.us",
+		SenderID:       "@phil:kulak.us",
+		SenderName:     "Phil",
+		Text:           "Random chatter",
+		IsDM:           false,
+	})
+
+	count, err := app.inbox.Count(ctx)
+	if err != nil {
+		t.Fatal(err)
+	}
+
+	if count != 1 {
+		t.Errorf("inbox count = %d, want 1 when regex unset", count)
 	}
 }

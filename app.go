@@ -10,6 +10,8 @@ import (
 	"regexp"
 	"strconv"
 	"strings"
+	"sync"
+	"time"
 
 	"github.com/pinpox/opencrow/matrix"
 )
@@ -20,7 +22,51 @@ var (
 	reactRe    = regexp.MustCompile(`(?m)(?:^[\t ]*|[\t ]+)<react[\t ]+id="([^"\r\n]+)">([^\r\n]*)</react>[\t ]*$`)
 )
 
-const maxReactionBytes = 64
+const (
+	maxReactionBytes    = 64
+	recentChatMaxCount  = 20
+	recentChatMaxAge    = 2 * time.Hour
+	groupFollowUpWindow = 5 * time.Minute
+)
+
+type recentMessage struct {
+	sender string
+	text   string
+	time   time.Time
+}
+
+type conversationFilterState struct {
+	lastAgentMessageAt time.Time
+	lastSenderIsAgent  bool
+	bufferedChat       []recentMessage
+}
+
+func (s *conversationFilterState) appendBufferedChat(msg recentMessage) {
+	s.bufferedChat = append(s.bufferedChat, msg)
+	if len(s.bufferedChat) > recentChatMaxCount {
+		s.bufferedChat = s.bufferedChat[len(s.bufferedChat)-recentChatMaxCount:]
+	}
+}
+
+func (s *conversationFilterState) drainBufferedChat() []recentMessage {
+	if len(s.bufferedChat) == 0 {
+		return nil
+	}
+
+	now := time.Now()
+
+	var valid []recentMessage
+
+	for _, m := range s.bufferedChat {
+		if now.Sub(m.time) <= recentChatMaxAge {
+			valid = append(valid, m)
+		}
+	}
+
+	s.bufferedChat = nil
+
+	return valid
+}
 
 type reactionRequest struct {
 	messageID string
@@ -105,21 +151,34 @@ func extractSendTo(text string) (string, string) {
 
 // App orchestrates command handling, inbox enqueueing, and file extraction.
 type App struct {
-	matrix appMatrix
-	worker *Worker
-	inbox  *InboxStore
-	outbox *outboxStore
+	matrix            appMatrix
+	worker            *Worker
+	inbox             *InboxStore
+	outbox            *outboxStore
+	groupTriggerRegex *regexp.Regexp
+
+	mu           sync.Mutex
+	filterStates map[string]*conversationFilterState
 }
 
 // NewApp creates a new App. The db connection is shared with the inbox
 // and owned by the caller.
 func NewApp(matrixClient appMatrix, worker *Worker, inbox *InboxStore, db *sql.DB) *App {
 	return &App{
-		matrix: matrixClient,
-		worker: worker,
-		inbox:  inbox,
-		outbox: newOutboxStore(db),
+		matrix:       matrixClient,
+		worker:       worker,
+		inbox:        inbox,
+		outbox:       newOutboxStore(db),
+		filterStates: make(map[string]*conversationFilterState),
 	}
+}
+
+// SetGroupTriggerRegex configures the regex used to filter unaddressed group messages.
+func (a *App) SetGroupTriggerRegex(re *regexp.Regexp) {
+	a.mu.Lock()
+	defer a.mu.Unlock()
+
+	a.groupTriggerRegex = re
 }
 
 // HandleMessage dispatches commands and enqueues normal Matrix messages.
@@ -197,9 +256,26 @@ func (a *App) handleSkills(ctx context.Context, msg matrix.Message) {
 }
 
 func (a *App) handlePrompt(ctx context.Context, msg matrix.Message) {
+	var buffered []recentMessage
+
+	if !msg.IsDM {
+		shouldProcess, b := a.checkGroupMessage(msg)
+		if !shouldProcess {
+			slog.Debug("app: ignoring unaddressed group message",
+				"conversation", msg.ConversationID,
+				"sender", msg.SenderName,
+				"text", msg.Text,
+			)
+
+			return
+		}
+
+		buffered = b
+	}
+
 	a.worker.SetRoomID(msg.ConversationID)
 
-	promptText := a.buildPromptText(ctx, msg)
+	promptText := a.buildPromptText(ctx, msg, buffered)
 
 	if err := a.inbox.EnqueueUser(ctx, promptText, msg.ReplyToID, msg.ConversationID, msg.MessageID, !msg.IsDM); err != nil {
 		slog.Error("failed to enqueue user message", "error", err)
@@ -211,8 +287,8 @@ func (a *App) handlePrompt(ctx context.Context, msg matrix.Message) {
 	a.worker.Notify(PriorityUser)
 }
 
-// buildPromptText prepends context tags and reply-quote context to the message text.
-func (a *App) buildPromptText(ctx context.Context, msg matrix.Message) string {
+// buildPromptText prepends context tags, buffered recent messages, and reply-quote context to the message text.
+func (a *App) buildPromptText(ctx context.Context, msg matrix.Message, buffered []recentMessage) string {
 	promptText := msg.Text
 
 	if msg.ReplyToID != "" {
@@ -233,11 +309,96 @@ func (a *App) buildPromptText(ctx context.Context, msg matrix.Message) string {
 		}
 	}
 
+	recentBlock := formatRecentChat(buffered)
+	if recentBlock != "" {
+		if tags == "" {
+			tags = recentBlock
+		} else {
+			tags += "\n\n" + recentBlock
+		}
+	}
+
 	if tags != "" {
 		promptText = tags + "\n\n" + promptText
 	}
 
 	return promptText
+}
+
+// formatRecentChat formats buffered unaddressed messages into an XML block.
+func formatRecentChat(messages []recentMessage) string {
+	if len(messages) == 0 {
+		return ""
+	}
+
+	lines := make([]string, 0, len(messages)+2)
+	lines = append(lines, "<recent-room-messages>")
+
+	for _, m := range messages {
+		lines = append(lines, fmt.Sprintf("%s: %s", escape(m.sender), escape(m.text)))
+	}
+
+	lines = append(lines, "</recent-room-messages>")
+
+	return strings.Join(lines, "\n")
+}
+
+func (a *App) getOrCreateFilterState(conversationID string) *conversationFilterState {
+	st, ok := a.filterStates[conversationID]
+	if !ok {
+		st = &conversationFilterState{}
+		a.filterStates[conversationID] = st
+	}
+
+	return st
+}
+
+func (a *App) recordAgentActivity(conversationID string) {
+	a.mu.Lock()
+	defer a.mu.Unlock()
+
+	st := a.getOrCreateFilterState(conversationID)
+	st.lastAgentMessageAt = time.Now()
+	st.lastSenderIsAgent = true
+}
+
+func (a *App) checkGroupMessage(msg matrix.Message) (bool, []recentMessage) {
+	a.mu.Lock()
+	defer a.mu.Unlock()
+
+	if a.groupTriggerRegex == nil {
+		return true, nil
+	}
+
+	st := a.getOrCreateFilterState(msg.ConversationID)
+
+	matchesRegex := a.groupTriggerRegex.MatchString(msg.Text)
+	withinWindow := !st.lastAgentMessageAt.IsZero() && time.Since(st.lastAgentMessageAt) < groupFollowUpWindow
+	isNextMessage := st.lastSenderIsAgent
+
+	if matchesRegex || withinWindow || isNextMessage {
+		st.lastSenderIsAgent = false
+		buffered := st.drainBufferedChat()
+
+		return true, buffered
+	}
+
+	st.lastSenderIsAgent = false
+
+	if trimmed := strings.TrimSpace(msg.Text); trimmed != "" {
+		sender := msg.SenderName
+		if sender == "" {
+			sender = msg.SenderID
+		}
+
+		st.appendBufferedChat(recentMessage{
+			sender: sender,
+			text:   trimmed,
+			time:   time.Now(),
+		})
+	}
+
+	return false, nil
 }
 
 // buildContextTags returns a block of XML-style context tags derived from the
@@ -293,6 +454,8 @@ func (a *App) sendReaction(ctx context.Context, conversationID string, reaction 
 			"message", reaction.messageID,
 			"error", err,
 		)
+	} else {
+		a.recordAgentActivity(conversationID)
 	}
 }
 
@@ -320,6 +483,7 @@ func (a *App) sendReplyWithFiles(ctx context.Context, conversationID, reply, rep
 	if cleanReply != "" {
 		sentID := a.matrix.SendMessage(ctx, conversationID, cleanReply, replyToID)
 		a.outbox.Put(ctx, conversationID, sentID, cleanReply)
+		a.recordAgentActivity(conversationID)
 	}
 }
 

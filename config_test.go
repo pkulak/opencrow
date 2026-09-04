@@ -113,3 +113,60 @@ func TestDiscoverSkills_Symlinks(t *testing.T) {
 		t.Errorf("skill path = %q, want %q", skills[0], want)
 	}
 }
+
+func TestLoadConfig_GroupTriggerRegex(t *testing.T) {
+	t.Parallel()
+
+	t.Run("unset", func(t *testing.T) {
+		t.Parallel()
+
+		cfg, err := loadConfig(testEnv(baseMatrixEnv()))
+		if err != nil {
+			t.Fatalf("loadConfig: %v", err)
+		}
+
+		if cfg.GroupTriggerRegex != nil {
+			t.Errorf("GroupTriggerRegex = %v, want nil", cfg.GroupTriggerRegex)
+		}
+	})
+
+	t.Run("valid", func(t *testing.T) {
+		t.Parallel()
+
+		env := baseMatrixEnv()
+		env["OPENCROW_GROUP_TRIGGER_REGEX"] = `(?i)\b(barnaby|barn)\b`
+
+		cfg, err := loadConfig(testEnv(env))
+		if err != nil {
+			t.Fatalf("loadConfig: %v", err)
+		}
+
+		if cfg.GroupTriggerRegex == nil {
+			t.Fatal("GroupTriggerRegex is nil, want compiled regex")
+		}
+
+		if !cfg.GroupTriggerRegex.MatchString("Hey Barn, what's up?") {
+			t.Error("regex did not match expected string")
+		}
+
+		if cfg.GroupTriggerRegex.MatchString("Hello everyone") {
+			t.Error("regex matched unexpected string")
+		}
+	})
+
+	t.Run("invalid", func(t *testing.T) {
+		t.Parallel()
+
+		env := baseMatrixEnv()
+		env["OPENCROW_GROUP_TRIGGER_REGEX"] = `[unclosed`
+
+		_, err := loadConfig(testEnv(env))
+		if err == nil {
+			t.Fatal("expected error for invalid regex, got nil")
+		}
+
+		if !strings.Contains(err.Error(), "invalid OPENCROW_GROUP_TRIGGER_REGEX") {
+			t.Errorf("error %q does not mention OPENCROW_GROUP_TRIGGER_REGEX", err.Error())
+		}
+	})
+}

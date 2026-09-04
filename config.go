@@ -5,14 +5,16 @@ import (
 	"fmt"
 	"os"
 	"path/filepath"
+	"regexp"
 	"strings"
 	"time"
 )
 
 type Config struct {
-	Matrix    MatrixConfig
-	Pi        PiConfig
-	Heartbeat HeartbeatConfig
+	Matrix            MatrixConfig
+	Pi                PiConfig
+	Heartbeat         HeartbeatConfig
+	GroupTriggerRegex *regexp.Regexp
 }
 
 type HeartbeatConfig struct {
@@ -83,6 +85,17 @@ func loadConfig(getenv func(string) string) (*Config, error) {
 		return nil, err
 	}
 
+	var groupTriggerRegex *regexp.Regexp
+
+	if pattern := env.str("OPENCROW_GROUP_TRIGGER_REGEX"); pattern != "" {
+		re, err := compileGroupTriggerRegex(pattern)
+		if err != nil {
+			return nil, err
+		}
+
+		groupTriggerRegex = re
+	}
+
 	cfg := &Config{
 		Matrix: MatrixConfig{
 			Homeserver:   env.str("OPENCROW_MATRIX_HOMESERVER"),
@@ -93,23 +106,12 @@ func loadConfig(getenv func(string) string) (*Config, error) {
 			PickleKey:    env.or("OPENCROW_MATRIX_PICKLE_KEY", "opencrow-default-pickle-key"),
 			CryptoDBPath: env.or("OPENCROW_MATRIX_CRYPTO_DB", filepath.Join(workingDir, "crypto.db")),
 		},
-		Pi: PiConfig{
-			BinaryPath:    env.or("OPENCROW_PI_BINARY", "pi"),
-			SessionDir:    env.or("OPENCROW_PI_SESSION_DIR", "/var/lib/opencrow/sessions"),
-			Provider:      env.or("OPENCROW_PI_PROVIDER", "anthropic"),
-			Model:         env.or("OPENCROW_PI_MODEL", "claude-opus-4-6"),
-			WorkingDir:    workingDir,
-			IdleTimeout:   idleTimeout,
-			SystemPrompt:  loadSoul(env),
-			Skills:        skills,
-			ShowToolCalls: env.bool("OPENCROW_SHOW_TOOL_CALLS"),
-			DebugTiming:   env.bool("OPENCROW_DEBUG_TIMING"),
-			DefaultRoomID: env.str("OPENCROW_MATRIX_ROOM_ID"),
-		},
+		Pi: loadPiConfig(env, workingDir, idleTimeout, skills),
 		Heartbeat: HeartbeatConfig{
 			Interval: heartbeatInterval,
 			Prompt:   env.or("OPENCROW_HEARTBEAT_PROMPT", defaultHeartbeatPrompt),
 		},
+		GroupTriggerRegex: groupTriggerRegex,
 	}
 
 	if err := cfg.Matrix.validate(); err != nil {
@@ -129,12 +131,37 @@ func (m MatrixConfig) validate() error {
 
 // requireField returns an "is required" error if v is empty. Intended for
 // use with errors.Join so that validate() reports all missing fields at once.
+func loadPiConfig(env envReader, workingDir string, idleTimeout time.Duration, skills []string) PiConfig {
+	return PiConfig{
+		BinaryPath:    env.or("OPENCROW_PI_BINARY", "pi"),
+		SessionDir:    env.or("OPENCROW_PI_SESSION_DIR", "/var/lib/opencrow/sessions"),
+		Provider:      env.or("OPENCROW_PI_PROVIDER", "anthropic"),
+		Model:         env.or("OPENCROW_PI_MODEL", "claude-opus-4-6"),
+		WorkingDir:    workingDir,
+		IdleTimeout:   idleTimeout,
+		SystemPrompt:  loadSoul(env),
+		Skills:        skills,
+		ShowToolCalls: env.bool("OPENCROW_SHOW_TOOL_CALLS"),
+		DebugTiming:   env.bool("OPENCROW_DEBUG_TIMING"),
+		DefaultRoomID: env.str("OPENCROW_MATRIX_ROOM_ID"),
+	}
+}
+
 func requireField(v, name string) error {
 	if v == "" {
 		return fmt.Errorf("%s is required", name)
 	}
 
 	return nil
+}
+
+func compileGroupTriggerRegex(pattern string) (*regexp.Regexp, error) {
+	re, err := regexp.Compile(pattern)
+	if err != nil {
+		return nil, fmt.Errorf("invalid OPENCROW_GROUP_TRIGGER_REGEX %q: %w", pattern, err)
+	}
+
+	return re, nil
 }
 
 // envReader wraps a getenv function with typed accessors so callers do not

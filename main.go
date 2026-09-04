@@ -261,6 +261,10 @@ func wireServices(ctx context.Context, cfg *Config, db *sql.DB, inbox *InboxStor
 
 	// Phase 2: wire cross-references.
 	app = NewApp(b, worker, inbox, db)
+	if cfg.GroupTriggerRegex != nil {
+		app.SetGroupTriggerRegex(cfg.GroupTriggerRegex)
+	}
+
 	worker.SetApp(app)
 	worker.SetMatrix(b)
 
