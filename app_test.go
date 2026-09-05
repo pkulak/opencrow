@@ -94,25 +94,16 @@ func (m *mockMatrix) SystemPromptExtra() string {
 	return m.systemPromptExtraText
 }
 
-type testMatrix interface {
-	appMatrix
-	workerMatrix
-}
-
 // newTestApp creates a mock Matrix client and App wired together for testing.
 func newTestApp(t *testing.T) (*App, *mockMatrix) {
 	t.Helper()
 
-	return newTestAppWithMatrix(t, &mockMatrix{})
+	matrixClient := &mockMatrix{}
+
+	return newTestAppWithMatrix(t, matrixClient), matrixClient
 }
 
-func newTestAppWithMatrix(t *testing.T, matrixClient *mockMatrix) (*App, *mockMatrix) {
-	t.Helper()
-
-	return newTestAppForMatrix(t, matrixClient), matrixClient
-}
-
-func newTestAppForMatrix(t *testing.T, matrixClient testMatrix) *App {
+func newTestAppWithMatrix(t *testing.T, matrixClient *mockMatrix) *App {
 	t.Helper()
 
 	ctx := context.Background()
@@ -556,7 +547,7 @@ func TestApp_SendReactionValidatesConversationAndMessage(t *testing.T) {
 	t.Parallel()
 
 	matrixClient := &mockMatrix{}
-	app := newTestAppForMatrix(t, matrixClient)
+	app := newTestAppWithMatrix(t, matrixClient)
 	ctx := context.Background()
 
 	app.outbox.Put(ctx, reactionSourceRoom, reactionEventID, "hello")
@@ -649,7 +640,7 @@ func TestApp_SystemPrompt(t *testing.T) {
 		t.Run(tc.name, func(t *testing.T) {
 			t.Parallel()
 
-			app, _ := newTestAppWithMatrix(t, &mockMatrix{systemPromptExtraText: tc.extra})
+			app := newTestAppWithMatrix(t, &mockMatrix{systemPromptExtraText: tc.extra})
 
 			if got := app.systemPrompt("Base prompt"); got != tc.want {
 				t.Errorf("systemPrompt = %q, want %q", got, tc.want)
