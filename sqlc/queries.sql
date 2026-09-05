@@ -35,16 +35,6 @@ WHERE id = (
 RETURNING id, priority, source, content, reply_to, conversation_id,
           message_id, is_group, created_at;
 
--- name: PeekInbox :one
-SELECT id, priority, source, content, reply_to, conversation_id,
-       message_id, is_group, created_at
-FROM inbox
-ORDER BY priority ASC, id ASC
-LIMIT 1;
-
--- name: DeleteInboxItem :exec
-DELETE FROM inbox WHERE id = ?;
-
 -- name: DeleteStaleItems :exec
 DELETE FROM inbox WHERE source IN ('heartbeat', 'compact');
 

@@ -32,15 +32,6 @@ func (q *Queries) CountOutbox(ctx context.Context, conversationID string) (int64
 	return count, err
 }
 
-const deleteInboxItem = `-- name: DeleteInboxItem :exec
-DELETE FROM inbox WHERE id = ?
-`
-
-func (q *Queries) DeleteInboxItem(ctx context.Context, id int64) error {
-	_, err := q.db.ExecContext(ctx, deleteInboxItem, id)
-	return err
-}
-
 const deleteOldestOutbox = `-- name: DeleteOldestOutbox :exec
 DELETE FROM sent_messages
 WHERE rowid IN (
@@ -198,31 +189,6 @@ type InsertReminderParams struct {
 func (q *Queries) InsertReminder(ctx context.Context, arg InsertReminderParams) error {
 	_, err := q.db.ExecContext(ctx, insertReminder, arg.FireAt, arg.Prompt)
 	return err
-}
-
-const peekInbox = `-- name: PeekInbox :one
-SELECT id, priority, source, content, reply_to, conversation_id,
-       message_id, is_group, created_at
-FROM inbox
-ORDER BY priority ASC, id ASC
-LIMIT 1
-`
-
-func (q *Queries) PeekInbox(ctx context.Context) (Inbox, error) {
-	row := q.db.QueryRowContext(ctx, peekInbox)
-	var i Inbox
-	err := row.Scan(
-		&i.ID,
-		&i.Priority,
-		&i.Source,
-		&i.Content,
-		&i.ReplyTo,
-		&i.ConversationID,
-		&i.MessageID,
-		&i.IsGroup,
-		&i.CreatedAt,
-	)
-	return i, err
 }
 
 const upsertOutbox = `-- name: UpsertOutbox :exec
