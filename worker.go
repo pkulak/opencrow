@@ -528,10 +528,6 @@ func (w *Worker) handlePiError(ctx context.Context, item Inbox, convID, label st
 func (w *Worker) requeuePreempted(item Inbox) bool {
 	slog.Info("worker: preempted", "source", item.Source)
 
-	if item.Source == sourceHeartbeat {
-		return true
-	}
-
 	if err := w.inbox.Requeue(context.Background(), item); err != nil {
 		slog.Error("worker: failed to requeue after preemption (item lost)", "source", item.Source, "error", err)
 	}

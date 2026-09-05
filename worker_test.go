@@ -88,6 +88,27 @@ func TestBuildPrompt_InjectsTimestamp(t *testing.T) {
 	}
 }
 
+func TestWorker_RequeuePreemptedHeartbeat(t *testing.T) {
+	t.Parallel()
+
+	ctx := t.Context()
+	inbox := newTestInbox(ctx, t)
+	w := NewWorker(inbox, PiConfig{}, "", "")
+
+	if !w.requeuePreempted(Inbox{Priority: PriorityHeartbeat, Source: sourceHeartbeat}) {
+		t.Fatal("requeuePreempted returned false, want true")
+	}
+
+	count, err := inbox.Count(ctx)
+	if err != nil {
+		t.Fatal(err)
+	}
+
+	if count != 0 {
+		t.Errorf("inbox count = %d, want 0", count)
+	}
+}
+
 func TestResolveConversationID(t *testing.T) {
 	t.Parallel()
 
