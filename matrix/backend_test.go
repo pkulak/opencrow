@@ -364,6 +364,8 @@ func writeJSON(t *testing.T, w http.ResponseWriter, value any) {
 }
 
 func TestFilterMessageDropsPreJoinHistory(t *testing.T) {
+	t.Parallel()
+
 	roomID := id.RoomID("!room:example.org")
 	cutoff := time.Date(2026, 5, 8, 12, 0, 0, 0, time.UTC).UnixMilli()
 
@@ -373,36 +375,17 @@ func TestFilterMessageDropsPreJoinHistory(t *testing.T) {
 		eventTS  int64
 		wantDrop bool
 	}{
-		{
-			name:     "drops messages from before recorded join",
-			joinedAt: map[id.RoomID]int64{roomID: cutoff},
-			eventTS:  cutoff - 1,
-			wantDrop: true,
-		},
-		{
-			name:     "allows message exactly at recorded join",
-			joinedAt: map[id.RoomID]int64{roomID: cutoff},
-			eventTS:  cutoff,
-		},
-		{
-			name:     "allows messages after recorded join",
-			joinedAt: map[id.RoomID]int64{roomID: cutoff},
-			eventTS:  cutoff + 1,
-		},
-		{
-			name:     "allows messages in rooms without recorded join",
-			joinedAt: map[id.RoomID]int64{},
-			eventTS:  cutoff - 1,
-		},
-		{
-			name:     "allows messages without server timestamp",
-			joinedAt: map[id.RoomID]int64{roomID: cutoff},
-			eventTS:  0,
-		},
+		{"drops messages from before recorded join", map[id.RoomID]int64{roomID: cutoff}, cutoff - 1, true},
+		{"allows message exactly at recorded join", map[id.RoomID]int64{roomID: cutoff}, cutoff, false},
+		{"allows messages after recorded join", map[id.RoomID]int64{roomID: cutoff}, cutoff + 1, false},
+		{"allows messages in rooms without recorded join", map[id.RoomID]int64{}, cutoff - 1, false},
+		{"allows messages without server timestamp", map[id.RoomID]int64{roomID: cutoff}, 0, false},
 	}
 
 	for _, tt := range tests {
 		t.Run(tt.name, func(t *testing.T) {
+			t.Parallel()
+
 			b := &Backend{
 				userID:   id.UserID("@bot:example.org"),
 				joinedAt: tt.joinedAt,
@@ -427,6 +410,8 @@ func TestFilterMessageDropsPreJoinHistory(t *testing.T) {
 }
 
 func TestRecordRoomJoinKeepsEarliestCutoff(t *testing.T) {
+	t.Parallel()
+
 	roomID := id.RoomID("!room:example.org")
 	b := &Backend{}
 
@@ -440,6 +425,8 @@ func TestRecordRoomJoinKeepsEarliestCutoff(t *testing.T) {
 }
 
 func TestCleanupRoomClearsJoinCutoff(t *testing.T) {
+	t.Parallel()
+
 	roomID := id.RoomID("!room:example.org")
 	b := &Backend{
 		joinedAt: map[id.RoomID]int64{roomID: 1234},

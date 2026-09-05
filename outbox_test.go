@@ -9,6 +9,8 @@ import (
 	_ "modernc.org/sqlite"
 )
 
+const outboxTestHello = "hello"
+
 // openTestOutbox creates an outboxStore backed by a temp SQLite DB
 // and registers cleanup.
 func openTestOutbox(t *testing.T) *outboxStore {
@@ -23,12 +25,12 @@ func TestOutbox_PutAndGet(t *testing.T) {
 	s := openTestOutbox(t)
 	ctx := context.Background()
 
-	s.Put(ctx, "room1", "msg1", "hello")
+	s.Put(ctx, "room1", "msg1", outboxTestHello)
 	s.Put(ctx, "room1", "msg2", "world")
 	s.Put(ctx, "room2", "msg3", "other room")
 
-	if got := s.Get(ctx, "room1", "msg1"); got != "hello" {
-		t.Errorf("Get(room1, msg1) = %q, want %q", got, "hello")
+	if got := s.Get(ctx, "room1", "msg1"); got != outboxTestHello {
+		t.Errorf("Get(room1, msg1) = %q, want %q", got, outboxTestHello)
 	}
 
 	if got := s.Get(ctx, "room1", "msg2"); got != "world" {
@@ -122,7 +124,7 @@ func TestOutbox_GetCancelledContext(t *testing.T) {
 	s := openTestOutbox(t)
 	bg := context.Background()
 
-	s.Put(bg, "room1", "msg1", "hello")
+	s.Put(bg, "room1", "msg1", outboxTestHello)
 
 	ctx, cancel := context.WithCancel(bg)
 	cancel()
@@ -139,7 +141,7 @@ func TestOutbox_GetAfterClose(t *testing.T) {
 	db := newTestDBAt(ctx, t, filepath.Join(t.TempDir(), "test.db"))
 	s := newOutboxStore(db)
 
-	s.Put(ctx, "room1", "msg1", "hello")
+	s.Put(ctx, "room1", "msg1", outboxTestHello)
 
 	// Close the DB to provoke a real (non-ErrNoRows) error on the next Get.
 	db.Close()
@@ -158,15 +160,15 @@ func TestOutbox_Persistence(t *testing.T) {
 	// First connection: write some messages.
 	db1 := newTestDBAt(ctx, t, dbPath)
 	s1 := newOutboxStore(db1)
-	s1.Put(ctx, "room1", "msg1", "hello")
+	s1.Put(ctx, "room1", "msg1", outboxTestHello)
 	s1.Put(ctx, "room1", "msg2", "world")
 	db1.Close()
 
 	// Second connection: reads from the same file.
 	s2 := newOutboxStore(newTestDBAt(ctx, t, dbPath))
 
-	if got := s2.Get(ctx, "room1", "msg1"); got != "hello" {
-		t.Errorf("after reload, Get(room1, msg1) = %q, want %q", got, "hello")
+	if got := s2.Get(ctx, "room1", "msg1"); got != outboxTestHello {
+		t.Errorf("after reload, Get(room1, msg1) = %q, want %q", got, outboxTestHello)
 	}
 
 	if got := s2.Get(ctx, "room1", "msg2"); got != "world" {

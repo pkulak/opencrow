@@ -172,6 +172,7 @@ func readEvents(scanner *bufio.Scanner, ch chan<- rpcParsed) {
 
 		var evt rpcEvent
 		if err := json.Unmarshal([]byte(line), &evt); err != nil {
+			// #nosec G706 -- slog's TextHandler quotes and escapes this untrusted string attribute.
 			slog.Warn("malformed JSON from pi", "error", err, "line", line)
 
 			continue

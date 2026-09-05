@@ -78,7 +78,8 @@ func logResponse(evt rpcEvent) {
 // logToolArgs returns slog key-value pairs for a tool_execution_start event,
 // including the tool name and a summary of the most relevant argument.
 func logToolArgs(evt rpcEvent) []any {
-	attrs := []any{"tool", evt.ToolName}
+	attrs := make([]any, 0, 4)
+	attrs = append(attrs, "tool", evt.ToolName)
 
 	var key string
 

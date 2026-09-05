@@ -360,139 +360,136 @@ func TestApp_BuildPromptText_ReplyToUserMessage(t *testing.T) {
 	}
 }
 
-func TestBuildContextTags(t *testing.T) {
+func TestBuildContextTagsNoEnrichment(t *testing.T) {
 	t.Parallel()
 
-	t.Run("no enrichment fields", func(t *testing.T) {
-		t.Parallel()
+	msg := matrix.Message{Text: "hello"}
+	got := buildContextTags(msg)
 
-		msg := matrix.Message{Text: "hello"}
-		got := buildContextTags(msg)
-		// IsDM is always emitted, even when false.
-		want := "<is-dm>false</is-dm>"
-		if got != want {
-			t.Errorf("buildContextTags = %q, want %q", got, want)
+	// IsDM is always emitted, even when false.
+	want := "<is-dm>false</is-dm>"
+	if got != want {
+		t.Errorf("buildContextTags = %q, want %q", got, want)
+	}
+}
+
+func TestBuildContextTagsAllFields(t *testing.T) {
+	t.Parallel()
+
+	msg := matrix.Message{
+		ConversationID: "!room:matrix.org",
+		SenderID:       "@alice:matrix.org",
+		SenderName:     "Alice",
+		RoomName:       "Dev Chat",
+		RoomSize:       5,
+		IsDM:           false,
+	}
+	got := buildContextTags(msg)
+
+	checks := []string{
+		"<from-id>@alice:matrix.org</from-id>",
+		"<room-id>!room:matrix.org</room-id>",
+		"<is-dm>false</is-dm>",
+		"<from-name>Alice</from-name>",
+		"<room-name>Dev Chat</room-name>",
+		"<room-size>5</room-size>",
+	}
+
+	for _, want := range checks {
+		if !strings.Contains(got, want) {
+			t.Errorf("buildContextTags missing %q\ngot: %q", want, got)
 		}
-	})
+	}
+}
 
-	t.Run("all fields set", func(t *testing.T) {
-		t.Parallel()
+func TestBuildContextTagsIsDMAlwaysPresent(t *testing.T) {
+	t.Parallel()
 
-		msg := matrix.Message{
-			ConversationID: "!room:matrix.org",
-			SenderID:       "@alice:matrix.org",
-			SenderName:     "Alice",
-			RoomName:       "Dev Chat",
-			RoomSize:       5,
-			IsDM:           false,
+	msg := matrix.Message{Text: "hello"}
+	got := buildContextTags(msg)
+
+	if !strings.Contains(got, "<is-dm>") {
+		t.Errorf("buildContextTags missing <is-dm>, got: %q", got)
+	}
+}
+
+func TestBuildContextTagsOmitsRoomFieldsForDMs(t *testing.T) {
+	t.Parallel()
+
+	msg := matrix.Message{
+		ConversationID: "!dm:matrix.org",
+		SenderID:       "@bob:matrix.org",
+		RoomName:       "My DM",
+		RoomSize:       2,
+		IsDM:           true,
+	}
+	got := buildContextTags(msg)
+
+	for _, absent := range []string{"room-size", "room-name"} {
+		if strings.Contains(got, absent) {
+			t.Errorf("%s should be omitted for DMs, got: %q", absent, got)
 		}
-		got := buildContextTags(msg)
+	}
 
-		checks := []string{
-			"<from-id>@alice:matrix.org</from-id>",
-			"<room-id>!room:matrix.org</room-id>",
-			"<is-dm>false</is-dm>",
-			"<from-name>Alice</from-name>",
-			"<room-name>Dev Chat</room-name>",
-			"<room-size>5</room-size>",
+	if !strings.Contains(got, "<is-dm>true</is-dm>") {
+		t.Errorf("missing <is-dm>true</is-dm>, got: %q", got)
+	}
+}
+
+func TestBuildContextTagsPartialFields(t *testing.T) {
+	t.Parallel()
+
+	msg := matrix.Message{
+		ConversationID: "abcdef1234",
+		SenderID:       "abcdef1234",
+		IsDM:           true,
+	}
+	got := buildContextTags(msg)
+
+	checks := []string{
+		"<from-id>abcdef1234</from-id>",
+		"<room-id>abcdef1234</room-id>",
+		"<is-dm>true</is-dm>",
+	}
+
+	for _, want := range checks {
+		if !strings.Contains(got, want) {
+			t.Errorf("buildContextTags missing %q\ngot: %q", want, got)
 		}
+	}
 
-		for _, want := range checks {
-			if !strings.Contains(got, want) {
-				t.Errorf("buildContextTags missing %q\ngot: %q", want, got)
-			}
+	// Matrix-only fields should be absent.
+	for _, absent := range []string{"from-name", "room-name", "room-size"} {
+		if strings.Contains(got, absent) {
+			t.Errorf("buildContextTags should not contain %q\ngot: %q", absent, got)
 		}
-	})
+	}
+}
 
-	t.Run("partial fields — only universal fields set", func(t *testing.T) {
-		t.Parallel()
+func TestBuildContextTagsEscapesTagContents(t *testing.T) {
+	t.Parallel()
 
-		msg := matrix.Message{
-			ConversationID: "abcdef1234",
-			SenderID:       "abcdef1234",
-			IsDM:           true,
+	msg := matrix.Message{
+		ConversationID: "!room<&>:matrix.org",
+		SenderID:       "@alice<&>:matrix.org",
+		SenderName:     "Alice <admin> & \"owner\"",
+		RoomName:       "Dev <Chat> & Friends",
+		RoomSize:       3,
+	}
+	got := buildContextTags(msg)
+
+	checks := []string{
+		"<from-id>@alice&lt;&amp;&gt;:matrix.org</from-id>",
+		"<room-id>!room&lt;&amp;&gt;:matrix.org</room-id>",
+		"<from-name>Alice &lt;admin&gt; &amp; &#34;owner&#34;</from-name>",
+		"<room-name>Dev &lt;Chat&gt; &amp; Friends</room-name>",
+	}
+
+	for _, want := range checks {
+		if !strings.Contains(got, want) {
+			t.Errorf("buildContextTags missing escaped %q\ngot: %q", want, got)
 		}
-		got := buildContextTags(msg)
-
-		checks := []string{
-			"<from-id>abcdef1234</from-id>",
-			"<room-id>abcdef1234</room-id>",
-			"<is-dm>true</is-dm>",
-		}
-
-		for _, want := range checks {
-			if !strings.Contains(got, want) {
-				t.Errorf("buildContextTags missing %q\ngot: %q", want, got)
-			}
-		}
-
-		// Matrix-only fields should be absent.
-		for _, absent := range []string{"from-name", "room-name", "room-size"} {
-			if strings.Contains(got, absent) {
-				t.Errorf("buildContextTags should not contain %q\ngot: %q", absent, got)
-			}
-		}
-	})
-
-	t.Run("is-dm always present", func(t *testing.T) {
-		t.Parallel()
-
-		msg := matrix.Message{Text: "hello"}
-		got := buildContextTags(msg)
-
-		if !strings.Contains(got, "<is-dm>") {
-			t.Errorf("buildContextTags missing <is-dm>, got: %q", got)
-		}
-	})
-
-	t.Run("room-name and room-size omitted when is-dm is true", func(t *testing.T) {
-		t.Parallel()
-
-		msg := matrix.Message{
-			ConversationID: "!dm:matrix.org",
-			SenderID:       "@bob:matrix.org",
-			RoomName:       "My DM",
-			RoomSize:       2,
-			IsDM:           true,
-		}
-		got := buildContextTags(msg)
-
-		for _, absent := range []string{"room-size", "room-name"} {
-			if strings.Contains(got, absent) {
-				t.Errorf("%s should be omitted for DMs, got: %q", absent, got)
-			}
-		}
-
-		if !strings.Contains(got, "<is-dm>true</is-dm>") {
-			t.Errorf("missing <is-dm>true</is-dm>, got: %q", got)
-		}
-	})
-
-	t.Run("tag contents are escaped", func(t *testing.T) {
-		t.Parallel()
-
-		msg := matrix.Message{
-			ConversationID: "!room<&>:matrix.org",
-			SenderID:       "@alice<&>:matrix.org",
-			SenderName:     "Alice <admin> & \"owner\"",
-			RoomName:       "Dev <Chat> & Friends",
-			RoomSize:       3,
-		}
-		got := buildContextTags(msg)
-
-		checks := []string{
-			"<from-id>@alice&lt;&amp;&gt;:matrix.org</from-id>",
-			"<room-id>!room&lt;&amp;&gt;:matrix.org</room-id>",
-			"<from-name>Alice &lt;admin&gt; &amp; &#34;owner&#34;</from-name>",
-			"<room-name>Dev &lt;Chat&gt; &amp; Friends</room-name>",
-		}
-
-		for _, want := range checks {
-			if !strings.Contains(got, want) {
-				t.Errorf("buildContextTags missing escaped %q\ngot: %q", want, got)
-			}
-		}
-	})
+	}
 }
 
 func TestBuildPromptText_ContextTags(t *testing.T) {

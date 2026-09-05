@@ -87,6 +87,11 @@ func run() int {
 		return 1
 	}
 
+	return runServices(ctx, b, worker, cancel)
+}
+
+// runServices starts the Matrix backend and worker, then shuts them down.
+func runServices(ctx context.Context, b *matrix.Backend, worker *Worker, cancel context.CancelFunc) int {
 	setupShutdown(b, cancel)
 
 	workerDone := spawnWorker(ctx, worker)
@@ -159,9 +164,10 @@ func openDB(ctx context.Context, sessionDir string) (*sql.DB, error) {
 }
 
 // migrateInboxConversationID adds the conversation_id column to the inbox
-// table if it is missing
+// table if it is missing.
 func migrateInboxConversationID(ctx context.Context, db *sql.DB) error {
 	var colName string
+
 	err := db.QueryRowContext(ctx, "SELECT name FROM pragma_table_info('inbox') WHERE name = 'conversation_id'").Scan(&colName)
 	if err == nil {
 		// Column already exists — nothing to do.

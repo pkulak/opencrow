@@ -282,6 +282,7 @@ func TestOpenDB_MigratesInboxColumns(t *testing.T) {
 
 	// Create a database with the old schema (no conversation_id column).
 	dbPath := dir + "/opencrow.db"
+
 	db, err := sql.Open("sqlite", dbPath+sqliteDSNParams)
 	if err != nil {
 		t.Fatal(err)

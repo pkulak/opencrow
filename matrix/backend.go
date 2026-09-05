@@ -539,6 +539,7 @@ func (b *Backend) handleInvite(ctx context.Context, evt *event.Event) {
 	activeRoom := b.activeRoom
 	multiRoom := b.cfg.MultiRoom
 	b.roomMu.Unlock()
+
 	if !multiRoom && activeRoom != "" {
 		slog.Info("ignoring invite, already active in a room", "active_room", activeRoom, "invited_room", evt.RoomID)
 
@@ -669,16 +670,19 @@ type roomStateSnapshot struct {
 // members fetch fails; a missing m.room.name is treated as an unnamed room.
 func (b *Backend) getRoomState(ctx context.Context, roomID id.RoomID, sender id.UserID) (roomStateSnapshot, error) {
 	b.roomStateMu.RLock()
+
 	if rs, ok := b.roomStates[roomID]; ok {
 		snap := roomStateSnapshot{
 			name:        rs.name,
 			memberCount: len(rs.members),
 			senderName:  rs.members[sender],
 		}
+
 		b.roomStateMu.RUnlock()
 
 		return snap, nil
 	}
+
 	b.roomStateMu.RUnlock()
 
 	members, err := b.client.JoinedMembers(ctx, roomID)
@@ -716,6 +720,7 @@ func (b *Backend) updateRoomMembers(evt *event.Event, mem *event.MemberEventCont
 	if evt.StateKey == nil {
 		return
 	}
+
 	user := id.UserID(*evt.StateKey)
 
 	b.roomStateMu.Lock()
@@ -731,6 +736,8 @@ func (b *Backend) updateRoomMembers(evt *event.Event, mem *event.MemberEventCont
 		rs.members[user] = mem.Displayname
 	case event.MembershipLeave, event.MembershipBan:
 		delete(rs.members, user)
+	case event.MembershipInvite, event.MembershipKnock:
+		// Invites and knocks don't change joined membership.
 	}
 }
 

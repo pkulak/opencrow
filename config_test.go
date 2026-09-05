@@ -36,6 +36,7 @@ func testEnv(m map[string]string) func(string) string {
 
 // baseMatrixEnv returns the minimum environment needed for Matrix.
 func baseMatrixEnv() map[string]string {
+	// #nosec G101 -- these are non-functional test-only Matrix credentials.
 	return map[string]string{
 		"OPENCROW_MATRIX_HOMESERVER":   "https://matrix.example.com",
 		"OPENCROW_MATRIX_USER_ID":      "@bot:example.com",
