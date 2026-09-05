@@ -25,14 +25,12 @@ var (
 const (
 	maxReactionBytes    = 64
 	recentChatMaxCount  = 20
-	recentChatMaxAge    = 2 * time.Hour
 	groupFollowUpWindow = 5 * time.Minute
 )
 
 type recentMessage struct {
 	sender string
 	text   string
-	time   time.Time
 }
 
 type conversationFilterState struct {
@@ -49,23 +47,10 @@ func (s *conversationFilterState) appendBufferedChat(msg recentMessage) {
 }
 
 func (s *conversationFilterState) drainBufferedChat() []recentMessage {
-	if len(s.bufferedChat) == 0 {
-		return nil
-	}
-
-	now := time.Now()
-
-	var valid []recentMessage
-
-	for _, m := range s.bufferedChat {
-		if now.Sub(m.time) <= recentChatMaxAge {
-			valid = append(valid, m)
-		}
-	}
-
+	buffered := s.bufferedChat
 	s.bufferedChat = nil
 
-	return valid
+	return buffered
 }
 
 type reactionRequest struct {
@@ -394,7 +379,6 @@ func (a *App) checkGroupMessage(msg matrix.Message) (bool, []recentMessage) {
 		st.appendBufferedChat(recentMessage{
 			sender: sender,
 			text:   trimmed,
-			time:   time.Now(),
 		})
 	}
 
