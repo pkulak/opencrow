@@ -496,38 +496,34 @@ in
     '';
   };
 
-  config = lib.mkIf (instanceConfigs != { }) (
-    lib.mkMerge [
-      # Aggregate host-level config from all instances.
+  # Aggregate host-level config from all instances.
+  config = lib.mkIf (instanceConfigs != { }) {
+    assertions = [
       {
-        assertions = [
-          {
-            assertion = !(cfg.instances ? "default");
-            message = "services.opencrow: the instance name 'default' is reserved for the top-level configuration. Use a different name or configure via services.opencrow.enable with top-level options.";
-          }
-        ]
-        ++ lib.concatLists (lib.mapAttrsToList (_: ic: ic.assertions) instanceConfigs);
-
-        environment.systemPackages = lib.concatLists (
-          lib.mapAttrsToList (_: ic: ic.systemPackages) instanceConfigs
-        );
-
-        systemd.tmpfiles.rules = lib.concatLists (
-          lib.mapAttrsToList (_: ic: ic.tmpfilesRules) instanceConfigs
-        );
-
-        # Work around stale machined registration after unclean shutdown.
-        systemd.services = lib.mapAttrs' (
-          name: ic:
-          lib.nameValuePair "container@${containerNameOf name}" {
-            preStart = lib.mkBefore ic.containerPreStart;
-          }
-        ) instanceConfigs;
-
-        containers = lib.mapAttrs' (
-          name: ic: lib.nameValuePair (containerNameOf name) ic.container
-        ) instanceConfigs;
+        assertion = !(cfg.instances ? "default");
+        message = "services.opencrow: the instance name 'default' is reserved for the top-level configuration. Use a different name or configure via services.opencrow.enable with top-level options.";
       }
     ]
-  );
+    ++ lib.concatLists (lib.mapAttrsToList (_: ic: ic.assertions) instanceConfigs);
+
+    environment.systemPackages = lib.concatLists (
+      lib.mapAttrsToList (_: ic: ic.systemPackages) instanceConfigs
+    );
+
+    systemd.tmpfiles.rules = lib.concatLists (
+      lib.mapAttrsToList (_: ic: ic.tmpfilesRules) instanceConfigs
+    );
+
+    # Work around stale machined registration after unclean shutdown.
+    systemd.services = lib.mapAttrs' (
+      name: ic:
+      lib.nameValuePair "container@${containerNameOf name}" {
+        preStart = lib.mkBefore ic.containerPreStart;
+      }
+    ) instanceConfigs;
+
+    containers = lib.mapAttrs' (
+      name: ic: lib.nameValuePair (containerNameOf name) ic.container
+    ) instanceConfigs;
+  };
 }
