@@ -31,7 +31,7 @@ arrive, the pi process is still reaped after the idle timeout.
 ### Enabling on NixOS
 
 ```nix
-services.opencrow.settings.OPENCROW_HEARTBEAT_INTERVAL = "30m";
+services.opencrow.environment.OPENCROW_HEARTBEAT_INTERVAL = "30m";
 ```
 
 The reminder dispatcher runs regardless; this only controls the
