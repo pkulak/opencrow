@@ -13,7 +13,10 @@ import (
 	"time"
 )
 
-const scannerBufSize = 1 << 20 // 1 MB
+const (
+	scannerInitialBufSize = 64 << 10 // 64 KiB
+	scannerMaxBufSize     = 64 << 20 // 64 MiB
+)
 
 // ToolCallEvent contains information about a tool invocation relayed from pi.
 type ToolCallEvent struct {
@@ -124,6 +127,13 @@ func (p *PiProcess) IsAlive() bool {
 	}
 }
 
+func newRPCScanner(reader io.Reader) *bufio.Scanner {
+	scanner := bufio.NewScanner(reader)
+	scanner.Buffer(make([]byte, scannerInitialBufSize), scannerMaxBufSize)
+
+	return scanner
+}
+
 func startPiProcess(cmd *exec.Cmd, sessionDir string) (*PiProcess, error) {
 	stdinPipe, err := cmd.StdinPipe()
 	if err != nil {
@@ -159,8 +169,7 @@ func startPiProcess(cmd *exec.Cmd, sessionDir string) (*PiProcess, error) {
 		}
 	}()
 
-	scanner := bufio.NewScanner(stdoutPipe)
-	scanner.Buffer(make([]byte, scannerBufSize), scannerBufSize)
+	scanner := newRPCScanner(stdoutPipe)
 
 	done := make(chan struct{})
 

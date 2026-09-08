@@ -24,7 +24,7 @@ var (
 
 const (
 	maxReactionBytes    = 64
-	recentChatMaxCount  = 20
+	recentChatMaxCount  = 64
 	groupFollowUpWindow = 5 * time.Minute
 )
 

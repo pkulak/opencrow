@@ -1,7 +1,9 @@
 package main
 
 import (
+	"bytes"
 	"encoding/json"
+	"strings"
 	"testing"
 )
 
@@ -115,6 +117,28 @@ func TestWaitForResult_RetryRescindsError(t *testing.T) {
 
 	if reply != "recovered" {
 		t.Fatalf("reply = %q, want recovered", reply)
+	}
+}
+
+func TestRPCScannerAcceptsLargeAgentEnd(t *testing.T) {
+	t.Parallel()
+
+	event, err := json.Marshal(agentEnd("end_turn", "", strings.Repeat("x", 2<<20)))
+	if err != nil {
+		t.Fatalf("marshal event: %v", err)
+	}
+
+	event = append(event, '\n')
+	ch := make(chan rpcParsed, 1)
+	readEvents(newRPCScanner(bytes.NewReader(event)), ch)
+
+	parsed := <-ch
+	if parsed.err != nil {
+		t.Fatalf("read event: %v", parsed.err)
+	}
+
+	if parsed.event.Type != rpcTypeAgentEnd {
+		t.Fatalf("event type = %q, want %q", parsed.event.Type, rpcTypeAgentEnd)
 	}
 }
 

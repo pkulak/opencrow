@@ -3,6 +3,7 @@ package main
 import (
 	"context"
 	"regexp"
+	"strconv"
 	"strings"
 	"sync"
 	"testing"
@@ -666,22 +667,22 @@ func TestFormatToolCall(t *testing.T) {
 
 var groupTriggerTestRe = regexp.MustCompile(`(?i)\b(barnaby|barn)\b`)
 
-func TestConversationFilterState_BuffersLast20MessagesUntilDrained(t *testing.T) {
+func TestConversationFilterState_BuffersLast64MessagesUntilDrained(t *testing.T) {
 	t.Parallel()
 
 	var state conversationFilterState
 
-	for i := range recentChatMaxCount + 1 {
-		state.appendBufferedChat(recentMessage{text: string(rune('A' + i))})
+	for i := range 65 {
+		state.appendBufferedChat(recentMessage{text: strconv.Itoa(i)})
 	}
 
 	buffered := state.drainBufferedChat()
-	if len(buffered) != recentChatMaxCount {
-		t.Fatalf("drained %d messages, want %d", len(buffered), recentChatMaxCount)
+	if len(buffered) != 64 {
+		t.Fatalf("drained %d messages, want 64", len(buffered))
 	}
 
-	if buffered[0].text != "B" || buffered[len(buffered)-1].text != "U" {
-		t.Errorf("drained messages range from %q to %q, want B to U", buffered[0].text, buffered[len(buffered)-1].text)
+	if buffered[0].text != "1" || buffered[len(buffered)-1].text != "64" {
+		t.Errorf("drained messages range from %q to %q, want 1 to 64", buffered[0].text, buffered[len(buffered)-1].text)
 	}
 
 	if state.bufferedChat != nil {
