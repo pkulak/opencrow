@@ -25,10 +25,22 @@ INSERT INTO inbox (
 )
 VALUES (?, ?, ?, ?, ?, ?, ?);
 
--- name: DequeueInbox :one
+-- name: DequeueChatInbox :one
 DELETE FROM inbox
 WHERE id = (
     SELECT id FROM inbox
+    WHERE source IN ('user', 'compact')
+    ORDER BY priority ASC, id ASC
+    LIMIT 1
+)
+RETURNING id, priority, source, content, reply_to, conversation_id,
+          message_id, is_group, created_at;
+
+-- name: DequeueBackgroundInbox :one
+DELETE FROM inbox
+WHERE id = (
+    SELECT id FROM inbox
+    WHERE source = 'trigger'
     ORDER BY priority ASC, id ASC
     LIMIT 1
 )
@@ -41,10 +53,8 @@ DELETE FROM inbox WHERE source IN ('heartbeat', 'compact');
 -- name: CountInbox :one
 SELECT count(*) FROM inbox;
 
--- name: EnqueueHeartbeatIfEmpty :execresult
-INSERT INTO inbox (priority, source, content, reply_to, conversation_id)
-SELECT ?, 'heartbeat', '', '', ''
-WHERE NOT EXISTS (SELECT 1 FROM inbox WHERE source = 'heartbeat');
+-- name: CountBackgroundInbox :one
+SELECT count(*) FROM inbox WHERE source = 'trigger';
 
 -- name: DueReminders :many
 -- datetime() normalizes ISO 8601 variants (Z vs +00:00, T vs space) so

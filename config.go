@@ -13,13 +13,8 @@ import (
 type Config struct {
 	Matrix            MatrixConfig
 	Pi                PiConfig
-	Heartbeat         HeartbeatConfig
+	BackgroundPi      PiConfig
 	GroupTriggerRegex *regexp.Regexp
-}
-
-type HeartbeatConfig struct {
-	Interval time.Duration // OPENCROW_HEARTBEAT_INTERVAL, default 0 (disabled)
-	Prompt   string        // OPENCROW_HEARTBEAT_PROMPT, default built-in
 }
 
 type MatrixConfig struct {
@@ -38,13 +33,14 @@ type PiConfig struct {
 	// tests use it to run the fake-pi stub via `bash <script>` so the
 	// testdata file needs no exec bit and no shebang lookup.
 	BinaryArgs []string
-	// SessionDir holds opencrow's internal state: pi session jsonl, opencrow.db,
-	// .room_id, trigger.pipe, downloaded attachments. Not the agent's cwd.
+	// SessionDir holds Pi session JSONL files. StateDir holds shared OpenCrow
+	// state such as opencrow.db, .room_id, and trigger.pipe.
 	SessionDir string
+	StateDir   string
 	Provider   string
 	Model      string
-	// WorkingDir is the agent's cwd — where it reads/writes user-facing files
-	// like HEARTBEAT.md. In system prompts, refer to this as "working directory".
+	// WorkingDir is the agent's cwd. In system prompts, refer to this as the
+	// "working directory".
 	WorkingDir    string
 	IdleTimeout   time.Duration
 	SystemPrompt  string
@@ -52,7 +48,7 @@ type PiConfig struct {
 	ShowToolCalls bool // OPENCROW_SHOW_TOOL_CALLS — relay tool_execution_start events to chat
 	DebugTiming   bool // OPENCROW_DEBUG_TIMING — append timing info to each reply
 	// DefaultRoomID is the fallback conversation ID for inbox items that
-	// have no ConversationID of their own (triggers, heartbeats). Takes
+	// have no ConversationID of their own (triggers). Takes
 	// precedence over the per-conversation SetRoomID mechanism.
 	DefaultRoomID string
 }
@@ -80,11 +76,6 @@ func loadConfig(getenv func(string) string) (*Config, error) {
 	allowedUsers := parseAllowedUsers(env.list("OPENCROW_ALLOWED_USERS"))
 	workingDir := env.or("OPENCROW_PI_WORKING_DIR", "/var/lib/opencrow")
 
-	heartbeatInterval, err := env.duration("OPENCROW_HEARTBEAT_INTERVAL", 0)
-	if err != nil {
-		return nil, err
-	}
-
 	var groupTriggerRegex *regexp.Regexp
 
 	if pattern := env.str("OPENCROW_GROUP_TRIGGER_REGEX"); pattern != "" {
@@ -106,11 +97,8 @@ func loadConfig(getenv func(string) string) (*Config, error) {
 			PickleKey:    env.or("OPENCROW_MATRIX_PICKLE_KEY", "opencrow-default-pickle-key"),
 			CryptoDBPath: env.or("OPENCROW_MATRIX_CRYPTO_DB", filepath.Join(workingDir, "crypto.db")),
 		},
-		Pi: loadPiConfig(env, workingDir, idleTimeout, skills),
-		Heartbeat: HeartbeatConfig{
-			Interval: heartbeatInterval,
-			Prompt:   env.or("OPENCROW_HEARTBEAT_PROMPT", defaultHeartbeatPrompt),
-		},
+		Pi:                loadPiConfig(env, workingDir, idleTimeout, skills),
+		BackgroundPi:      loadBackgroundPiConfig(env, workingDir, idleTimeout, skills),
 		GroupTriggerRegex: groupTriggerRegex,
 	}
 
@@ -132,9 +120,12 @@ func (m MatrixConfig) validate() error {
 // requireField returns an "is required" error if v is empty. Intended for
 // use with errors.Join so that validate() reports all missing fields at once.
 func loadPiConfig(env envReader, workingDir string, idleTimeout time.Duration, skills []string) PiConfig {
+	sessionDir := env.or("OPENCROW_PI_SESSION_DIR", "/var/lib/opencrow/sessions")
+
 	return PiConfig{
 		BinaryPath:    env.or("OPENCROW_PI_BINARY", "pi"),
-		SessionDir:    env.or("OPENCROW_PI_SESSION_DIR", "/var/lib/opencrow/sessions"),
+		SessionDir:    sessionDir,
+		StateDir:      sessionDir,
 		Provider:      env.or("OPENCROW_PI_PROVIDER", "anthropic"),
 		Model:         env.or("OPENCROW_PI_MODEL", "claude-opus-4-6"),
 		WorkingDir:    workingDir,
@@ -145,6 +136,15 @@ func loadPiConfig(env envReader, workingDir string, idleTimeout time.Duration, s
 		DebugTiming:   env.bool("OPENCROW_DEBUG_TIMING"),
 		DefaultRoomID: env.str("OPENCROW_MATRIX_ROOM_ID"),
 	}
+}
+
+func loadBackgroundPiConfig(env envReader, workingDir string, idleTimeout time.Duration, skills []string) PiConfig {
+	cfg := loadPiConfig(env, workingDir, idleTimeout, skills)
+	cfg.SessionDir = filepath.Join(cfg.StateDir, "background")
+	cfg.Provider = env.or("OPENCROW_BACKGROUND_PI_PROVIDER", cfg.Provider)
+	cfg.Model = env.or("OPENCROW_BACKGROUND_PI_MODEL", cfg.Model)
+
+	return cfg
 }
 
 func requireField(v, name string) error {
@@ -280,24 +280,6 @@ Be genuinely helpful, not performatively helpful. Skip the filler words — just
 Have opinions. Be resourceful before asking. Earn trust through competence.
 Be concise when needed, thorough when it matters. Not a corporate drone. Not a sycophant. Just good.
 When using tools, prefer standard Unix tools. Check output before proceeding. Break complex tasks into steps and execute them.`
-
-// heartbeatSoul is appended to the system prompt only when heartbeat is
-// enabled, so the agent isn't told about HEARTBEAT.md when the scheduler
-// never reads it.
-const heartbeatSoul = `## Heartbeat
-
-HEARTBEAT.md in your working directory holds standing checks to run
-periodically. One check per line:
-
-  - Check for urgent email
-  - [paused] Review old PRs
-
-Edit the file to add/remove checks. Prefix with [paused] to skip without
-deleting. This is a stable checklist — for one-shot reminders, use the
-remind_at tool instead.`
-
-const defaultHeartbeatPrompt = `Run through the standing checks below.
-If nothing needs attention, reply with exactly: HEARTBEAT_OK`
 
 const defaultTriggerPrompt = `External trigger received.`
 

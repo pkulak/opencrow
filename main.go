@@ -56,7 +56,7 @@ func run() int {
 
 	slog.Info("matrix config loaded")
 
-	if err := os.MkdirAll(cfg.Pi.SessionDir, 0o750); err != nil {
+	if err := os.MkdirAll(cfg.Pi.StateDir, 0o750); err != nil {
 		slog.Error("failed to create session directory", "error", err)
 
 		return 1
@@ -65,7 +65,7 @@ func run() int {
 	ctx, cancel := context.WithCancel(context.Background())
 	defer cancel()
 
-	db, err := openDB(ctx, cfg.Pi.SessionDir)
+	db, err := openDB(ctx, cfg.Pi.StateDir)
 	if err != nil {
 		slog.Error("failed to open database", "error", err)
 
@@ -80,21 +80,22 @@ func run() int {
 		return 1
 	}
 
-	b, worker, err := wireServices(ctx, cfg, db, inbox)
+	b, worker, backgroundWorker, err := wireServices(ctx, cfg, db, inbox)
 	if err != nil {
 		slog.Error("failed to initialize services", "error", err)
 
 		return 1
 	}
 
-	return runServices(ctx, b, worker, cancel)
+	return runServices(ctx, b, worker, backgroundWorker, cancel)
 }
 
-// runServices starts the Matrix backend and worker, then shuts them down.
-func runServices(ctx context.Context, b *matrix.Backend, worker *Worker, cancel context.CancelFunc) int {
+// runServices starts the Matrix backend and workers, then shuts them down.
+func runServices(ctx context.Context, b *matrix.Backend, worker, backgroundWorker *Worker, cancel context.CancelFunc) int {
 	setupShutdown(b, cancel)
 
 	workerDone := spawnWorker(ctx, worker)
+	backgroundDone := spawnWorker(ctx, backgroundWorker)
 
 	slog.Info("opencrow starting")
 
@@ -111,9 +112,10 @@ func runServices(ctx context.Context, b *matrix.Backend, worker *Worker, cancel 
 	}
 
 	// Matrix sync may have returned without a signal (error path); ensure
-	// the worker sees ctx.Done so the join below cannot hang.
+	// both workers see ctx.Done so the joins below cannot hang.
 	cancel()
 	<-workerDone
+	<-backgroundDone
 
 	_ = b.Close()
 
@@ -251,9 +253,10 @@ func migrateLegacyOutbox(ctx context.Context, db *sql.DB, sessionDir string) err
 }
 
 // wireServices creates the Matrix backend, app, and worker using two-phase init.
-func wireServices(ctx context.Context, cfg *Config, db *sql.DB, inbox *InboxStore) (*matrix.Backend, *Worker, error) {
+func wireServices(ctx context.Context, cfg *Config, db *sql.DB, inbox *InboxStore) (*matrix.Backend, *Worker, *Worker, error) {
 	// Phase 1: create objects with nil cross-references.
-	worker := NewWorker(inbox, cfg.Pi, cfg.Heartbeat.Prompt, defaultTriggerPrompt)
+	worker := NewWorker(inbox, cfg.Pi)
+	backgroundWorker := NewBackgroundWorker(inbox, cfg.BackgroundPi, defaultTriggerPrompt)
 
 	var app *App
 
@@ -262,30 +265,32 @@ func wireServices(ctx context.Context, cfg *Config, db *sql.DB, inbox *InboxStor
 		func(_ string) { worker.Restart() },
 	)
 	if err != nil {
-		return nil, nil, err
+		return nil, nil, nil, err
 	}
 
 	// Phase 2: wire cross-references.
 	app = NewApp(b, worker, inbox, db)
+	app.SetBackgroundWorker(backgroundWorker)
+
 	if cfg.GroupTriggerRegex != nil {
 		app.SetGroupTriggerRegex(cfg.GroupTriggerRegex)
 	}
 
 	worker.SetApp(app)
 	worker.SetMatrix(b)
+	backgroundWorker.SetApp(app)
+	backgroundWorker.SetMatrix(b)
 
 	worker.piCfg.SystemPrompt = app.systemPrompt(worker.piCfg.SystemPrompt)
+	backgroundWorker.piCfg.SystemPrompt = app.systemPrompt(backgroundWorker.piCfg.SystemPrompt)
 
-	if cfg.Heartbeat.Interval > 0 {
-		worker.piCfg.SystemPrompt += "\n\n" + heartbeatSoul
-	}
+	go reminderLoop(ctx, backgroundWorker)
 
-	// Start background services.
-	startHeartbeat(ctx, worker, cfg.Heartbeat)
-	startTriggerPipe(ctx, worker, cfg.Pi.SessionDir)
+	startTriggerPipe(ctx, backgroundWorker, cfg.Pi.StateDir)
 	worker.StartIdleReaper(ctx)
+	backgroundWorker.StartIdleReaper(ctx)
 
-	return b, worker, nil
+	return b, worker, backgroundWorker, nil
 }
 
 // spawnWorker runs the worker loop in a goroutine and returns a channel

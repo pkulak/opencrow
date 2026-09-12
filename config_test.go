@@ -7,6 +7,11 @@ import (
 	"testing"
 )
 
+const (
+	testChatProvider = "chat-provider"
+	testChatModel    = "chat-model"
+)
+
 func TestMatrixConfig_ValidateReportsAllMissing(t *testing.T) {
 	t.Parallel()
 
@@ -41,6 +46,51 @@ func baseMatrixEnv() map[string]string {
 		"OPENCROW_MATRIX_HOMESERVER":   "https://matrix.example.com",
 		"OPENCROW_MATRIX_USER_ID":      "@bot:example.com",
 		"OPENCROW_MATRIX_ACCESS_TOKEN": "syt_test_token",
+	}
+}
+
+func TestLoadConfig_BackgroundPiOverrides(t *testing.T) {
+	t.Parallel()
+
+	env := baseMatrixEnv()
+	env["OPENCROW_PI_SESSION_DIR"] = "/tmp/opencrow"
+	env["OPENCROW_PI_PROVIDER"] = testChatProvider
+	env["OPENCROW_PI_MODEL"] = testChatModel
+	env["OPENCROW_BACKGROUND_PI_MODEL"] = "background-model"
+
+	cfg, err := loadConfig(testEnv(env))
+	if err != nil {
+		t.Fatal(err)
+	}
+
+	if cfg.BackgroundPi.SessionDir != "/tmp/opencrow/background" {
+		t.Errorf("background session dir = %q", cfg.BackgroundPi.SessionDir)
+	}
+
+	if cfg.BackgroundPi.StateDir != "/tmp/opencrow" {
+		t.Errorf("background state dir = %q", cfg.BackgroundPi.StateDir)
+	}
+
+	if cfg.BackgroundPi.Provider != testChatProvider || cfg.BackgroundPi.Model != "background-model" {
+		t.Errorf("background model config = %q/%q", cfg.BackgroundPi.Provider, cfg.BackgroundPi.Model)
+	}
+}
+
+func TestLoadConfig_BackgroundProviderOverrideKeepsChatModel(t *testing.T) {
+	t.Parallel()
+
+	env := baseMatrixEnv()
+	env["OPENCROW_PI_PROVIDER"] = testChatProvider
+	env["OPENCROW_PI_MODEL"] = testChatModel
+	env["OPENCROW_BACKGROUND_PI_PROVIDER"] = "background-provider"
+
+	cfg, err := loadConfig(testEnv(env))
+	if err != nil {
+		t.Fatal(err)
+	}
+
+	if cfg.BackgroundPi.Provider != "background-provider" || cfg.BackgroundPi.Model != testChatModel {
+		t.Errorf("background model config = %q/%q", cfg.BackgroundPi.Provider, cfg.BackgroundPi.Model)
 	}
 }
 

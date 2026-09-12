@@ -202,7 +202,19 @@ let
             OPENCROW_PI_MODEL = lib.mkOption {
               type = lib.types.str;
               default = "claude-opus-4-6";
-              description = "Model ID for pi to use.";
+              description = "Model ID for the chat pi session.";
+            };
+
+            OPENCROW_BACKGROUND_PI_PROVIDER = lib.mkOption {
+              type = lib.types.str;
+              default = "";
+              description = "Optional provider override for the background pi session.";
+            };
+
+            OPENCROW_BACKGROUND_PI_MODEL = lib.mkOption {
+              type = lib.types.str;
+              default = "";
+              description = "Optional model override for reminders and external triggers.";
             };
 
             OPENCROW_PI_SESSION_DIR = lib.mkOption {
@@ -263,12 +275,6 @@ let
               ];
               default = "info";
               description = "Log verbosity. Set to 'debug' to log full conversation content.";
-            };
-
-            OPENCROW_HEARTBEAT_INTERVAL = lib.mkOption {
-              type = lib.types.str;
-              default = "";
-              description = "Heartbeat interval (Go duration, e.g. '30m'). Empty disables heartbeat; the reminder dispatcher still runs.";
             };
           };
         };

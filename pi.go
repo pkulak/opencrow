@@ -58,14 +58,23 @@ func StartPi(cfg PiConfig, roomID string, fresh bool) (*PiProcess, error) {
 		return nil, fmt.Errorf("creating session dir: %w", err)
 	}
 
-	// Persist the current room ID so the heartbeat scheduler can identify the room.
-	roomIDPath := filepath.Join(cfg.SessionDir, ".room_id")
+	stateDir := cfg.StateDir
+	if stateDir == "" {
+		stateDir = cfg.SessionDir
+	}
+
+	if err := os.MkdirAll(stateDir, 0o755); err != nil {
+		return nil, fmt.Errorf("creating state dir: %w", err)
+	}
+
+	// Persist the current room ID so background triggers can identify the room.
+	roomIDPath := filepath.Join(stateDir, ".room_id")
 	if err := os.WriteFile(roomIDPath, []byte(roomID), 0o600); err != nil {
 		return nil, fmt.Errorf("writing room ID file: %w", err)
 	}
 
 	// Create the trigger FIFO so external processes can write to it immediately.
-	if err := ensureFIFO(TriggerPipePath(cfg.SessionDir)); err != nil {
+	if err := ensureFIFO(TriggerPipePath(stateDir)); err != nil {
 		return nil, fmt.Errorf("creating trigger FIFO: %w", err)
 	}
 
@@ -74,7 +83,8 @@ func StartPi(cfg PiConfig, roomID string, fresh bool) (*PiProcess, error) {
 	// context.Background: see the doc comment on StartPi.
 	cmd := exec.CommandContext(context.Background(), cfg.BinaryPath, args...) //nolint:gosec // binary path is from trusted config
 	cmd.Dir = cfg.WorkingDir
-	cmd.Env = append(os.Environ(), "OPENCROW_SESSION_DIR="+cfg.SessionDir)
+
+	cmd.Env = append(os.Environ(), "OPENCROW_SESSION_DIR="+stateDir)
 	// Own process group + Pdeathsig: Kill must take down tool
 	// subprocesses too, and pi must not outlive opencrow even if Kill
 	// never runs. See configurePiSysProcAttr.

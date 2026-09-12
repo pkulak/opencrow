@@ -60,7 +60,7 @@ Or extract it from an existing Matrix client's session.
       # Restrict access to specific Matrix users (optional, empty allows all)
       OPENCROW_ALLOWED_USERS = "@alice:matrix.org,@bob:matrix.org";
 
-      # Optional: stable default room for heartbeats/triggers/reminders.
+      # Optional: stable default room for triggers/reminders.
       # When set, Matrix also switches from "join the first room only"
       # to "join all allowed invited rooms".
       # OPENCROW_MATRIX_ROOM_ID = "!your-room-id:matrix.org";
@@ -105,7 +105,7 @@ OPENCROW_MATRIX_ROOM_ID = "!your-room-id:matrix.org";
 
 That variable has two effects:
 
-- heartbeats, reminders, and trigger-pipe messages go to that room by default
+- reminders and trigger-pipe messages go to that room by default
 - the bot accepts all allowed Matrix invites instead of only the first one
 
 The bot still uses one shared session across rooms and DMs.

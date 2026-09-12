@@ -101,6 +101,8 @@ func (p *PiProcess) Compact(ctx context.Context) (*CompactResult, error) {
 		return nil, errors.New("pi process is not alive")
 	}
 
+	defer p.closeStdinOnCancel(ctx)()
+
 	if err := p.sendCommand(map[string]string{"type": "compact"}); err != nil {
 		return nil, err
 	}
@@ -111,8 +113,8 @@ func (p *PiProcess) Compact(ctx context.Context) (*CompactResult, error) {
 // sendAndWait sends a prompt command and waits for the agent to finish.
 // The caller must ensure only one goroutine calls this at a time. Tool calls
 // made during this prompt are forwarded to onToolCall when non-nil.
-// If ctx is cancelled, an abort command is sent to pi and the response
-// is drained before returning.
+// If ctx is cancelled, stdin is closed so a blocked command write returns.
+// The worker then kills the process so a stuck turn cannot block its queue.
 func (p *PiProcess) sendAndWait(ctx context.Context, message string, onToolCall func(ToolCallEvent)) (string, error) {
 	if !p.IsAlive() {
 		return "", errors.New("pi process is not alive")
@@ -121,6 +123,7 @@ func (p *PiProcess) sendAndWait(ctx context.Context, message string, onToolCall 
 	p.onToolCall = onToolCall
 
 	defer func() { p.onToolCall = nil }()
+	defer p.closeStdinOnCancel(ctx)()
 
 	if err := p.sendPromptCommand(message); err != nil {
 		return "", err
@@ -151,10 +154,12 @@ func (p *PiProcess) sendPromptCommand(message string) error {
 	})
 }
 
-func (p *PiProcess) sendAbort() {
-	if err := p.sendCommand(map[string]string{"type": "abort"}); err != nil {
-		slog.Warn("failed to send abort command", "error", err)
-	}
+// closeStdinOnCancel ensures cancellation can interrupt a blocked pipe write.
+// The worker owns process termination after the command returns.
+func (p *PiProcess) closeStdinOnCancel(ctx context.Context) func() {
+	stop := context.AfterFunc(ctx, func() { _ = p.stdin.Close() })
+
+	return func() { stop() }
 }
 
 // readEvents scans pi's stdout line by line, parses each JSON event,
@@ -191,30 +196,14 @@ func readEvents(scanner *bufio.Scanner, ch chan<- rpcParsed) {
 // drainEvents runs the caller-side event loop: it reads parsed events
 // from the persistent reader, handles side effects (extension UI cancel,
 // tool call notifications), and calls handleFn for each event.
-// handleFn returns true when the desired termination event has been
-// seen. On context cancellation an abort is sent; drainEvents
-// continues calling handleFn so it can detect the terminal event
-// (e.g. agent_end) and return promptly instead of blocking until EOF.
+// handleFn returns true when the desired termination event has been seen.
 func (p *PiProcess) drainEvents(ctx context.Context, handleFn func(rpcEvent) (bool, error)) error {
-	aborted := false
-
 	for {
-		parsed, err := p.nextEvent()
+		parsed, err := p.nextEvent(ctx)
 		if err != nil {
 			return err
 		}
 
-		// Check for cancellation before processing.
-		if !aborted && ctx.Err() != nil {
-			p.sendAbort()
-
-			aborted = true
-		}
-
-		// Always process the event even after abort so we detect the
-		// terminal event (agent_end / compact response) and return
-		// promptly. Without this the loop would block until EOF,
-		// hanging when pi stays alive after acknowledging the abort.
 		if err := p.handleSideEffects(parsed.event); err != nil {
 			return err
 		}
@@ -236,7 +225,7 @@ func (p *PiProcess) drainEvents(ctx context.Context, handleFn func(rpcEvent) (bo
 // footgun, and node extensions that fork grandchildren keep the pipe
 // FD open past Wait(), so the events channel may never close. Without
 // this select, drainEvents hangs forever on a dead process.
-func (p *PiProcess) nextEvent() (rpcParsed, error) {
+func (p *PiProcess) nextEvent(ctx context.Context) (rpcParsed, error) {
 	select {
 	case parsed, ok := <-p.events:
 		if !ok {
@@ -250,6 +239,8 @@ func (p *PiProcess) nextEvent() (rpcParsed, error) {
 		return parsed, nil
 	case <-p.done:
 		return rpcParsed{}, errors.New("pi process exited")
+	case <-ctx.Done():
+		return rpcParsed{}, fmt.Errorf("context cancelled: %w", ctx.Err())
 	}
 }
 
@@ -275,6 +266,18 @@ func (p *PiProcess) handleSideEffects(evt rpcEvent) error {
 	}
 
 	return nil
+}
+
+type providerError struct {
+	message string
+}
+
+func (e *providerError) Error() string {
+	return e.message
+}
+
+func (e *providerError) userMessage() string {
+	return fmt.Sprintf("Request failed: %s\n\nTry `!compact` to shrink the context, or `!restart` for a clean session.", e.message)
 }
 
 // resultWaiter tracks state across the agent_end / auto_retry_* event
@@ -413,14 +416,11 @@ func (p *PiProcess) waitForResult(ctx context.Context) (string, error) {
 		// Rescinded — pi is retrying or compacting. Go around again.
 	}
 
-	// Empty reply + committed error means the provider refused every
-	// attempt, not that the model chose to say nothing. Surface the
-	// error so the user sees "429 … long context" and knows to
-	// !compact instead of staring at "(empty response)" from
-	// retryEmptyResponse re-prompting into the same wall.
-	if w.reply == "" && w.finalErr != "" {
-		return fmt.Sprintf("Request failed: %s\n\nTry `!compact` to shrink the context, or `!restart` for a clean session.",
-			w.finalErr), nil
+	// A committed provider error is distinct from a deliberate empty reply.
+	// The worker shows recovery commands for chat and keeps background failures
+	// log-only.
+	if w.finalErr != "" {
+		return "", &providerError{message: w.finalErr}
 	}
 
 	return w.reply, nil

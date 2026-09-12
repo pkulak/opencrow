@@ -17,37 +17,33 @@ import (
 
 // Source names for inbox items.
 const (
-	sourceUser      = "user"
-	sourceTrigger   = "trigger"
-	sourceHeartbeat = "heartbeat"
-	sourceCompact   = "compact"
+	sourceUser    = "user"
+	sourceTrigger = "trigger"
+	sourceCompact = "compact"
 )
 
-// Worker owns the single pi process and drains the inbox in priority order.
-// There is exactly one worker per opencrow instance.
+// Worker owns one Pi process and drains either chat or background inbox items.
 type Worker struct {
-	inbox  *InboxStore
-	piCfg  PiConfig
-	app    *App
-	matrix workerMatrix
+	inbox   *InboxStore
+	piCfg   PiConfig
+	startPi func(PiConfig, string, bool) (*PiProcess, error)
+	app     *App
+	matrix  workerMatrix
 
 	roomID atomic.Value // string, resolved lazily from .room_id file
 
-	// config
-	hbPrompt      string
+	background    bool
 	triggerPrompt string
 
-	// mu protects pi, lastUse, compactResult, currentPriority, currentCancel, freshStart.
-	mu              sync.Mutex
-	pi              *PiProcess
-	freshStart      bool // next ensurePi spawns without --continue
-	lastUse         time.Time
-	currentPriority int64
-	currentCancel   context.CancelFunc
-	compactResult   chan compactOutcome
+	// mu protects pi, lastUse, compactResult, currentCancel, freshStart.
+	mu            sync.Mutex
+	pi            *PiProcess
+	freshStart    bool // next ensurePi spawns without --continue
+	lastUse       time.Time
+	currentCancel context.CancelFunc
+	compactResult chan compactOutcome
 
-	// wake is signalled (non-blocking) on every Notify call so the
-	// worker can poll the DB for the highest-priority item.
+	// wake is signalled (non-blocking) after new work is enqueued.
 	wake chan struct{}
 }
 
@@ -62,17 +58,25 @@ type workerMatrix interface {
 	SendMessage(ctx context.Context, conversationID, text, replyToID string) string
 }
 
-// NewWorker creates a new worker. The pi process is started lazily on first dequeue.
-// app and matrix are set after construction via SetApp/SetMatrix (two-phase init).
-func NewWorker(inbox *InboxStore, piCfg PiConfig, hbPrompt, triggerPrompt string) *Worker {
+// NewWorker creates a chat worker. The Pi process starts lazily on first dequeue.
+func NewWorker(inbox *InboxStore, piCfg PiConfig) *Worker {
+	return newWorker(inbox, piCfg, "", false)
+}
+
+// NewBackgroundWorker creates a worker for trigger items.
+func NewBackgroundWorker(inbox *InboxStore, piCfg PiConfig, triggerPrompt string) *Worker {
+	return newWorker(inbox, piCfg, triggerPrompt, true)
+}
+
+func newWorker(inbox *InboxStore, piCfg PiConfig, triggerPrompt string, background bool) *Worker {
 	return &Worker{
-		inbox:           inbox,
-		piCfg:           piCfg,
-		hbPrompt:        hbPrompt,
-		triggerPrompt:   triggerPrompt,
-		lastUse:         time.Now(),
-		currentPriority: -1,
-		wake:            make(chan struct{}, 1),
+		inbox:         inbox,
+		piCfg:         piCfg,
+		startPi:       StartPi,
+		triggerPrompt: triggerPrompt,
+		background:    background,
+		lastUse:       time.Now(),
+		wake:          make(chan struct{}, 1),
 	}
 }
 
@@ -82,20 +86,8 @@ func (w *Worker) SetApp(app *App) { w.app = app }
 // SetMatrix wires the Matrix reference (phase 2 of init).
 func (w *Worker) SetMatrix(matrixClient workerMatrix) { w.matrix = matrixClient }
 
-// Notify wakes the worker loop. Called after enqueueing an item.
-// If the new item has strictly higher priority than the running one,
-// the running operation is preempted.
-func (w *Worker) Notify(priority int64) {
-	w.mu.Lock()
-	if w.currentCancel != nil && priority < w.currentPriority {
-		slog.Info("worker: preempting current operation",
-			"new_priority", priority,
-			"current_priority", w.currentPriority,
-		)
-		w.currentCancel()
-	}
-	w.mu.Unlock()
-
+// Notify wakes the worker loop after an item is enqueued.
+func (w *Worker) Notify() {
 	select {
 	case w.wake <- struct{}{}:
 	default:
@@ -152,9 +144,19 @@ func (w *Worker) IsActive() bool {
 func (w *Worker) Restart() {
 	w.mu.Lock()
 	w.freshStart = true
+	cancel := w.currentCancel
+	pi := w.pi
+	w.pi = nil
 	w.mu.Unlock()
 
-	w.stopPi()
+	if cancel != nil {
+		cancel()
+	}
+
+	if pi != nil {
+		slog.Info("worker: stopping Pi process for restart")
+		pi.Kill()
+	}
 }
 
 // Compact enqueues a compact operation and waits for the result.
@@ -182,7 +184,7 @@ func (w *Worker) Compact(ctx context.Context) (*CompactResult, error) {
 		return nil, fmt.Errorf("enqueuing compact: %w", err)
 	}
 
-	w.Notify(PriorityUser)
+	w.Notify()
 
 	select {
 	case <-ctx.Done():
@@ -243,13 +245,21 @@ func (w *Worker) StartIdleReaper(ctx context.Context) {
 	}()
 }
 
+func (w *Worker) dequeue(ctx context.Context) (Inbox, error) {
+	if w.background {
+		return w.inbox.DequeueBackground(ctx)
+	}
+
+	return w.inbox.DequeueChat(ctx)
+}
+
 func (w *Worker) drainOnce(ctx context.Context) {
 	for {
 		if ctx.Err() != nil {
 			return
 		}
 
-		item, err := w.inbox.Dequeue(ctx)
+		item, err := w.dequeue(ctx)
 		if errors.Is(err, sql.ErrNoRows) {
 			return
 		}
@@ -268,9 +278,7 @@ func (w *Worker) drainOnce(ctx context.Context) {
 	}
 }
 
-// processItem handles one inbox item. Returns true if drainOnce should
-// stop looping (e.g. an item was requeued and should wait for a future
-// Notify rather than spinning).
+// processItem handles one inbox item.
 func (w *Worker) processItem(ctx context.Context, item Inbox) bool {
 	slog.Info("worker: processing", "source", item.Source, "priority", item.Priority, "id", item.ID)
 
@@ -278,28 +286,31 @@ func (w *Worker) processItem(ctx context.Context, item Inbox) bool {
 	defer cancel()
 
 	w.mu.Lock()
-	w.currentPriority = item.Priority
 	w.currentCancel = cancel
 	w.mu.Unlock()
 
 	defer func() {
 		w.mu.Lock()
-		w.currentPriority = -1
 		w.currentCancel = nil
 		w.mu.Unlock()
 	}()
 
+	var stopDraining bool
+
 	if item.Source == sourceCompact {
 		w.processCompact(itemCtx)
-
-		return false
+	} else {
+		stopDraining = w.processPrompt(itemCtx, item)
 	}
 
-	return w.processPrompt(itemCtx, item)
+	if itemCtx.Err() != nil {
+		w.stopPi()
+	}
+
+	return stopDraining
 }
 
-// processPrompt handles a user/trigger/heartbeat item. Returns true if
-// the caller should stop draining (item was requeued).
+// processPrompt handles a user or trigger item.
 func (w *Worker) processPrompt(ctx context.Context, item Inbox) bool {
 	prompt, ok := w.buildPrompt(item)
 	if !ok {
@@ -316,7 +327,7 @@ func (w *Worker) processPrompt(ctx context.Context, item Inbox) bool {
 	if item.Source == sourceUser && !item.IsGroup {
 		stopTyping = w.startTyping(ctx, convID)
 	}
-	defer stopTyping(context.Background()) //nolint:contextcheck // must clear typing even after preemption
+	defer stopTyping(context.Background()) //nolint:contextcheck // must clear typing after cancellation
 
 	onToolCall := w.toolCallHandler(ctx, item, convID)
 	taskStart := time.Now()
@@ -325,7 +336,9 @@ func (w *Worker) processPrompt(ctx context.Context, item Inbox) bool {
 	if err != nil {
 		killPi := pi != nil
 
-		return w.handlePiError(ctx, item, convID, "pi prompt failed", err, killPi)
+		w.handlePiError(ctx, item, convID, "pi prompt failed", err, killPi)
+
+		return false
 	}
 
 	w.mu.Lock()
@@ -343,16 +356,15 @@ func (w *Worker) processPrompt(ctx context.Context, item Inbox) bool {
 	}
 
 	reply, targetRoom := extractSendTo(reply)
-	replyToID := item.ReplyTo
+	convID, replyToID := replyDestination(convID, item.ConversationID, item.ReplyTo, targetRoom)
 
-	if targetRoom != "" {
-		convID = targetRoom
-		if targetRoom != item.ConversationID {
-			replyToID = ""
-		}
+	if ctx.Err() != nil {
+		slog.Info("worker: cancelled item dropped before reply", "source", item.Source)
+
+		return false
 	}
 
-	w.app.sendReplyWithFiles(ctx, convID, reply, replyToID)
+	w.app.sendReplyWithFiles(ctx, convID, reply, replyToID, !w.background)
 
 	return false
 }
@@ -385,8 +397,8 @@ func (w *Worker) prepareReply(
 // toolCallHandler reports visible tool calls when configured and acknowledges
 // the first tool used for a Matrix group message with an eyes reaction.
 func (w *Worker) toolCallHandler(ctx context.Context, item Inbox, convID string) func(ToolCallEvent) {
-	acknowledge := item.Source == sourceUser && item.IsGroup && item.MessageID != ""
-	if !acknowledge && !w.piCfg.ShowToolCalls {
+	acknowledge := !w.background && item.Source == sourceUser && item.IsGroup && item.MessageID != ""
+	if w.background || (!acknowledge && !w.piCfg.ShowToolCalls) {
 		return nil
 	}
 
@@ -450,30 +462,36 @@ func (w *Worker) startTyping(ctx context.Context, convID string) func(context.Co
 
 // buildPrompt assembles the prompt for the given inbox item, injecting the current time.
 func (w *Worker) buildPrompt(item Inbox) (string, bool) {
-	inner, ok := w.buildInnerPrompt(item)
-	if !ok {
-		return "", false
-	}
+	var prompt string
 
-	return injectTimestamp(inner), true
-}
-
-func (w *Worker) buildInnerPrompt(item Inbox) (string, bool) {
 	switch item.Source {
 	case sourceUser:
-		return item.Content, true
+		prompt = item.Content
 	case sourceTrigger:
-		return buildTriggerPrompt(w.triggerPrompt, item.Content), true
-	case sourceHeartbeat:
-		items := parseHeartbeatItems(w.readHeartbeatFile())
-		if len(items) == 0 {
-			return "", false
-		}
-
-		return buildHeartbeatPrompt(w.hbPrompt, items), true
+		prompt = buildTriggerPrompt(w.triggerPrompt, item.Content)
 	default:
 		return "", false
 	}
+
+	return injectTimestamp(prompt), true
+}
+
+// shouldSuppressReply returns true if the reply should not be forwarded.
+func shouldSuppressReply(reply, source string) bool {
+	firstLine, _, _ := strings.Cut(strings.TrimSpace(reply), "\n")
+	if strings.TrimSpace(firstLine) == "NO_REPLY" {
+		slog.Info(source + ": NO_REPLY, suppressing")
+
+		return true
+	}
+
+	if reply == "" {
+		slog.Info(source + ": empty response, suppressing")
+
+		return true
+	}
+
+	return false
 }
 
 // injectTimestamp prepends the current date/time to every prompt so the agent knows
@@ -502,12 +520,24 @@ func (w *Worker) handleNoRoomID(item Inbox) bool {
 	return false
 }
 
-// handlePiError handles errors from ensurePi or sendAndWait. Preempted
-// items are requeued; terminal failures kill the process and notify the
-// user. Returns true if drainOnce should stop.
-func (w *Worker) handlePiError(ctx context.Context, item Inbox, convID, label string, err error, killPi bool) bool {
-	if wasPreempted(ctx, err) {
-		return w.requeuePreempted(item) //nolint:contextcheck // item ctx is cancelled; requeue uses background ctx
+// handlePiError handles errors from ensurePi or sendAndWait. Cancelled items
+// are dropped; terminal failures kill the process and notify chat users.
+func (w *Worker) handlePiError(ctx context.Context, item Inbox, convID, label string, err error, killPi bool) {
+	if isContextCancellation(ctx, err) {
+		slog.Info("worker: cancelled item dropped", "source", item.Source)
+
+		return
+	}
+
+	var providerErr *providerError
+	if errors.As(err, &providerErr) {
+		slog.Warn("worker: provider request failed", "source", item.Source, "error", err)
+
+		if item.Source == sourceUser {
+			w.matrix.SendMessage(ctx, convID, providerErr.userMessage(), item.ReplyTo)
+		}
+
+		return
 	}
 
 	slog.Error("worker: "+label, "source", item.Source, "error", err)
@@ -519,20 +549,6 @@ func (w *Worker) handlePiError(ctx context.Context, item Inbox, convID, label st
 	if item.Source == sourceUser {
 		w.matrix.SendMessage(ctx, convID, fmt.Sprintf("Error: %v", err), "")
 	}
-
-	return false
-}
-
-// requeuePreempted re-inserts a preempted item (except heartbeats).
-// Returns true so drainOnce stops and re-enters via the new Notify.
-func (w *Worker) requeuePreempted(item Inbox) bool {
-	slog.Info("worker: preempted", "source", item.Source)
-
-	if err := w.inbox.Requeue(context.Background(), item); err != nil {
-		slog.Error("worker: failed to requeue after preemption (item lost)", "source", item.Source, "error", err)
-	}
-
-	return true
 }
 
 func (w *Worker) processCompact(ctx context.Context) {
@@ -558,7 +574,7 @@ func (w *Worker) processCompact(ctx context.Context) {
 	ch <- compactOutcome{result: result, err: err}
 }
 
-func wasPreempted(ctx context.Context, err error) bool {
+func isContextCancellation(ctx context.Context, err error) bool {
 	return errors.Is(err, context.Canceled) || errors.Is(err, context.DeadlineExceeded) ||
 		ctx.Err() != nil
 }
@@ -580,8 +596,8 @@ func (w *Worker) sendWithRetry(
 		return pi, reply, nil
 	}
 
-	// Don't retry on context cancellation (preemption/shutdown).
-	if ctx.Err() != nil {
+	var providerErr *providerError
+	if ctx.Err() != nil || errors.As(err, &providerErr) {
 		return pi, "", err
 	}
 
@@ -600,32 +616,32 @@ func (w *Worker) sendWithRetry(
 
 func (w *Worker) ensurePi(ctx context.Context) (*PiProcess, error) {
 	w.mu.Lock()
+	defer w.mu.Unlock()
+
 	if w.pi != nil && w.pi.IsAlive() {
-		pi := w.pi
-		w.mu.Unlock()
-
-		return pi, nil
+		return w.pi, nil
 	}
-
-	fresh := w.freshStart
-	w.freshStart = false
-
-	w.mu.Unlock()
-
-	roomID := w.resolveRoomID()
 
 	if ctx.Err() != nil {
 		return nil, fmt.Errorf("ensurePi cancelled: %w", ctx.Err())
 	}
 
-	pi, err := StartPi(w.piCfg, roomID, fresh) //nolint:contextcheck // see StartPi: process lifetime is worker-owned, not item-scoped
+	fresh := w.freshStart
+	roomID := w.resolveRoomID()
+
+	pi, err := w.startPi(w.piCfg, roomID, fresh)
 	if err != nil {
 		return nil, err
 	}
 
-	w.mu.Lock()
+	if ctx.Err() != nil {
+		pi.Kill()
+
+		return nil, fmt.Errorf("ensurePi cancelled: %w", ctx.Err())
+	}
+
 	w.pi = pi
-	w.mu.Unlock()
+	w.freshStart = false
 
 	return pi, nil
 }
@@ -642,11 +658,23 @@ func (w *Worker) stopPi() {
 	}
 }
 
+func replyDestination(currentRoom, sourceRoom, replyToID, targetRoom string) (string, string) {
+	if targetRoom == "" {
+		return currentRoom, replyToID
+	}
+
+	if targetRoom != sourceRoom {
+		replyToID = ""
+	}
+
+	return targetRoom, replyToID
+}
+
 // resolveConversationID determines the conversation ID for routing a reply,
 // using the first non-empty value from the priority chain:
 //
 //  1. item.ConversationID — set by the user message that created the inbox row
-//  2. DefaultRoomID — OPENCROW_MATRIX_ROOM_ID, a stable default for triggers/heartbeats
+//  2. DefaultRoomID — OPENCROW_MATRIX_ROOM_ID, a stable default for triggers
 //  3. resolveRoomID() — last user conversation captured by SetRoomID
 func resolveConversationID(itemConvID, defaultRoomID, activeRoomID string) string {
 	if itemConvID != "" {
@@ -665,7 +693,12 @@ func (w *Worker) resolveRoomID() string {
 		return id
 	}
 
-	path := filepath.Join(w.piCfg.SessionDir, ".room_id")
+	stateDir := w.piCfg.StateDir
+	if stateDir == "" {
+		stateDir = w.piCfg.SessionDir
+	}
+
+	path := filepath.Join(stateDir, ".room_id")
 
 	data, err := os.ReadFile(path)
 	if err != nil {
@@ -676,17 +709,6 @@ func (w *Worker) resolveRoomID() string {
 	w.roomID.Store(id)
 
 	return id
-}
-
-func (w *Worker) readHeartbeatFile() string {
-	path := filepath.Join(w.piCfg.WorkingDir, "HEARTBEAT.md")
-
-	data, err := os.ReadFile(path)
-	if err != nil && !errors.Is(err, os.ErrNotExist) {
-		slog.Warn("worker: failed to read HEARTBEAT.md", "error", err)
-	}
-
-	return string(data)
 }
 
 func (w *Worker) retryEmptyResponse(ctx context.Context, pi *PiProcess, onToolCall func(ToolCallEvent)) string {

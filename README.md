@@ -10,18 +10,19 @@ OpenCrow is a Matrix bot that bridges chat messages to
 session persistence, auto-compaction, and multi-provider LLM support. Instead of
 reimplementing all of that in Go, OpenCrow spawns pi as a long-lived subprocess
 via its RPC protocol and acts as a thin bridge. By default, the bot behaves as
-a single shared agent with one session. Setting `OPENCROW_MATRIX_ROOM_ID` gives
-triggers and heartbeats a stable default room and enables multi-room invite
-handling, while still keeping one shared session across rooms and DMs.
+a chat agent plus a separate background agent for reminders and external
+triggers. Setting `OPENCROW_MATRIX_ROOM_ID` gives background work a stable
+default room and enables multi-room invite handling.
 
 ```mermaid
 graph LR
     Matrix -->|message| Inbox[(Inbox)]
-    Heartbeat -->|timer| Inbox
     Reminders[(reminders)] -->|due| Inbox
     Trigger["trigger.pipe"] -->|external| Inbox
-    Inbox -->|dequeue| Worker -->|RPC| Pi["pi process"]
-    Pi -->|response| Worker -->|reply| Matrix
+    Inbox -->|chat items| Chat["chat worker"] -->|RPC| ChatPi["chat pi"]
+    Inbox -->|triggers| Background["background worker"] -->|RPC| BackgroundPi["background pi"]
+    ChatPi -->|response| Matrix
+    BackgroundPi -->|response| Matrix
 ```
 
 The Go bot receives Matrix messages, forwards them to the pi process, collects
@@ -41,4 +42,4 @@ the response, and sends it back.
 - **[Configuration](docs/configuration.md)** — Environment variables, Matrix settings, secrets, and authentication
 - **[Skills](docs/skills.md)** — Teaching the agent new capabilities via markdown instructions
 - **[Extensions](docs/extensions.md)** — TypeScript lifecycle hooks and custom tools
-- **[Heartbeat & Reminders](docs/heartbeat.md)** — Periodic checks, one-shot reminders, trigger pipes
+- **[Reminders](docs/reminders.md)** — One-shot reminders, recurring schedules, and trigger pipes

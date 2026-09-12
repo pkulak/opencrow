@@ -2,6 +2,14 @@
 # Invoked as `bash testdata/fake-pi` (see PiConfig.BinaryArgs); no exec bit needed.
 # shellcheck shell=bash
 set -eu
+printf '%s' "$*" > "$OPENCROW_SESSION_DIR/pi.args"
+
+case "$*" in
+  *--never-read*)
+    while :; do sleep 300; done
+    ;;
+esac
+
 while IFS= read -r line; do
   case "$line" in
     *'"type":"prompt"'*|*'"type": "prompt"'*)
@@ -33,6 +41,19 @@ while IFS= read -r line; do
           printf '%s\n' '{"type":"tool_execution_start","toolName":"bash","args":{"command":"true"}}'
           printf '%s\n' '{"type":"tool_execution_end","toolName":"bash"}'
           printf '%s\n' '{"type":"agent_end","messages":[{"role":"assistant","content":[{"type":"text","text":"Tool work complete"}],"stopReason":"end_turn"}]}'
+          continue
+          ;;
+      esac
+      case "$line" in
+        *provider-error-test*)
+          printf '%s\n' '{"type":"agent_end","messages":[{"role":"assistant","content":[],"stopReason":"error","errorMessage":"provider unavailable"}]}'
+          continue
+          ;;
+        *hang-test*)
+          continue
+          ;;
+        *silent-test*)
+          printf '%s\n' '{"type":"agent_end","messages":[{"role":"assistant","content":[{"type":"text","text":"NO_REPLY"}],"stopReason":"end_turn"}]}'
           continue
           ;;
       esac

@@ -7,8 +7,18 @@ package main
 
 import (
 	"context"
-	"database/sql"
 )
+
+const countBackgroundInbox = `-- name: CountBackgroundInbox :one
+SELECT count(*) FROM inbox WHERE source = 'trigger'
+`
+
+func (q *Queries) CountBackgroundInbox(ctx context.Context) (int64, error) {
+	row := q.db.QueryRowContext(ctx, countBackgroundInbox)
+	var count int64
+	err := row.Scan(&count)
+	return count, err
+}
 
 const countInbox = `-- name: CountInbox :one
 SELECT count(*) FROM inbox
@@ -70,10 +80,11 @@ func (q *Queries) DeleteStaleItems(ctx context.Context) error {
 	return err
 }
 
-const dequeueInbox = `-- name: DequeueInbox :one
+const dequeueBackgroundInbox = `-- name: DequeueBackgroundInbox :one
 DELETE FROM inbox
 WHERE id = (
     SELECT id FROM inbox
+    WHERE source = 'trigger'
     ORDER BY priority ASC, id ASC
     LIMIT 1
 )
@@ -81,8 +92,37 @@ RETURNING id, priority, source, content, reply_to, conversation_id,
           message_id, is_group, created_at
 `
 
-func (q *Queries) DequeueInbox(ctx context.Context) (Inbox, error) {
-	row := q.db.QueryRowContext(ctx, dequeueInbox)
+func (q *Queries) DequeueBackgroundInbox(ctx context.Context) (Inbox, error) {
+	row := q.db.QueryRowContext(ctx, dequeueBackgroundInbox)
+	var i Inbox
+	err := row.Scan(
+		&i.ID,
+		&i.Priority,
+		&i.Source,
+		&i.Content,
+		&i.ReplyTo,
+		&i.ConversationID,
+		&i.MessageID,
+		&i.IsGroup,
+		&i.CreatedAt,
+	)
+	return i, err
+}
+
+const dequeueChatInbox = `-- name: DequeueChatInbox :one
+DELETE FROM inbox
+WHERE id = (
+    SELECT id FROM inbox
+    WHERE source IN ('user', 'compact')
+    ORDER BY priority ASC, id ASC
+    LIMIT 1
+)
+RETURNING id, priority, source, content, reply_to, conversation_id,
+          message_id, is_group, created_at
+`
+
+func (q *Queries) DequeueChatInbox(ctx context.Context) (Inbox, error) {
+	row := q.db.QueryRowContext(ctx, dequeueChatInbox)
 	var i Inbox
 	err := row.Scan(
 		&i.ID,
@@ -127,16 +167,6 @@ func (q *Queries) DueReminders(ctx context.Context, datetime interface{}) ([]Rem
 		return nil, err
 	}
 	return items, nil
-}
-
-const enqueueHeartbeatIfEmpty = `-- name: EnqueueHeartbeatIfEmpty :execresult
-INSERT INTO inbox (priority, source, content, reply_to, conversation_id)
-SELECT ?, 'heartbeat', '', '', ''
-WHERE NOT EXISTS (SELECT 1 FROM inbox WHERE source = 'heartbeat')
-`
-
-func (q *Queries) EnqueueHeartbeatIfEmpty(ctx context.Context, priority int64) (sql.Result, error) {
-	return q.db.ExecContext(ctx, enqueueHeartbeatIfEmpty, priority)
 }
 
 const enqueueInbox = `-- name: EnqueueInbox :exec

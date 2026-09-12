@@ -11,57 +11,11 @@ import (
 	"github.com/robfig/cron/v3"
 )
 
-// reminderTick is how often we poll the reminders table for due items.
-// Independent of the heartbeat interval so one-shot reminders fire with
-// reasonable precision even when heartbeat is set to 30m or disabled.
+// reminderTick is how often we poll the reminder tables for due items.
 const (
 	reminderTick        = 1 * time.Minute
 	recurringInboxLimit = 5
 )
-
-// startHeartbeat runs two background loops:
-//   - a reminder dispatcher (every reminderTick) that fires due one-shot and
-//     recurring reminders as trigger items
-//   - a heartbeat ticker (every cfg.Interval, if > 0) that enqueues a
-//     heartbeat marker so the worker sends the configured heartbeat prompt
-func startHeartbeat(ctx context.Context, w *Worker, cfg HeartbeatConfig) {
-	go reminderLoop(ctx, w)
-
-	if cfg.Interval <= 0 {
-		slog.Info("heartbeat disabled (interval not set)")
-
-		return
-	}
-
-	slog.Info("heartbeat scheduler started", "interval", cfg.Interval)
-
-	go func() {
-		ticker := time.NewTicker(cfg.Interval)
-		defer ticker.Stop()
-
-		for {
-			select {
-			case <-ctx.Done():
-				return
-			case <-ticker.C:
-				inserted, err := w.inbox.EnqueueHeartbeat(ctx)
-				if err != nil {
-					slog.Error("heartbeat: failed to enqueue", "error", err)
-
-					continue
-				}
-
-				if !inserted {
-					slog.Debug("heartbeat: skipping, one already queued")
-
-					continue
-				}
-
-				w.Notify(PriorityHeartbeat)
-			}
-		}
-	}()
-}
 
 // reminderLoop polls the reminder tables and enqueues any due reminders as
 // trigger items. One-shot reminders are deleted when claimed. Recurring
@@ -111,7 +65,7 @@ func dispatchRecurringReminders(ctx context.Context, w *Worker, now time.Time) {
 			continue
 		}
 
-		inboxSize, err := w.inbox.Count(ctx)
+		inboxSize, err := w.inbox.CountBackground(ctx)
 		if err != nil {
 			slog.Error("recurring reminder: failed to count inbox, skipping", "id", reminder.ID, "error", err)
 
@@ -142,7 +96,7 @@ func dispatchRecurringReminders(ctx context.Context, w *Worker, now time.Time) {
 		}
 
 		slog.Info("recurring reminder: firing", "id", reminder.ID, "scheduled_at", scheduledAt)
-		w.Notify(PriorityTrigger)
+		w.Notify()
 	}
 }
 
@@ -222,75 +176,6 @@ func dispatchDueReminders(ctx context.Context, w *Worker) {
 			continue
 		}
 
-		w.Notify(PriorityTrigger)
+		w.Notify()
 	}
-}
-
-// parseHeartbeatItems extracts active checklist items from HEARTBEAT.md.
-// Only `- text` lines count; `- [paused] text` is skipped. Everything else
-// (headers, blank lines, prose) is ignored. No completed/priority metadata —
-// obsolete checks are deleted, not marked.
-func parseHeartbeatItems(content string) []string {
-	var items []string
-
-	for line := range strings.SplitSeq(content, "\n") {
-		text, ok := strings.CutPrefix(strings.TrimSpace(line), "- ")
-		if !ok {
-			continue
-		}
-
-		text = strings.TrimSpace(text)
-		if text == "" || strings.HasPrefix(text, "[paused]") {
-			continue
-		}
-
-		items = append(items, text)
-	}
-
-	return items
-}
-
-func buildHeartbeatPrompt(basePrompt string, items []string) string {
-	var sb strings.Builder
-
-	sb.WriteString(basePrompt)
-	sb.WriteString("\n\nStanding checks:\n")
-
-	for _, it := range items {
-		sb.WriteString("- ")
-		sb.WriteString(it)
-		sb.WriteByte('\n')
-	}
-
-	return sb.String()
-}
-
-// shouldSuppressReply returns true if the reply should not be forwarded
-// to the user. Each source type has its own sentinel to prevent the model
-// from cross-contaminating — a heartbeat can only be silenced by
-// HEARTBEAT_OK, while triggers and user messages can only be silenced by
-// NO_REPLY.
-func shouldSuppressReply(reply, source string) bool {
-	if source == sourceHeartbeat && strings.Contains(reply, "HEARTBEAT_OK") {
-		slog.Info(source + ": HEARTBEAT_OK, suppressing")
-
-		return true
-	}
-
-	if source != sourceHeartbeat {
-		firstLine, _, _ := strings.Cut(strings.TrimSpace(reply), "\n")
-		if strings.TrimSpace(firstLine) == "NO_REPLY" {
-			slog.Info(source + ": NO_REPLY, suppressing")
-
-			return true
-		}
-	}
-
-	if reply == "" {
-		slog.Info(source + ": empty response, suppressing")
-
-		return true
-	}
-
-	return false
 }

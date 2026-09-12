@@ -4,7 +4,6 @@ import (
 	"context"
 	"database/sql"
 	"testing"
-	"time"
 
 	_ "modernc.org/sqlite"
 )
@@ -56,84 +55,26 @@ func newTestInbox(ctx context.Context, t *testing.T) *InboxStore {
 	return newTestInboxWithDB(ctx, t, newTestDB(ctx, t))
 }
 
-func TestInbox_PriorityOrder(t *testing.T) {
+func TestInbox_SourceRouting(t *testing.T) {
 	t.Parallel()
 
 	ctx := context.Background()
 	inbox := newTestInbox(ctx, t)
+	must(t, inbox.Enqueue(ctx, PriorityTrigger, sourceTrigger, "trigger", "", ""))
+	must(t, inbox.Enqueue(ctx, PriorityUser, sourceUser, "user", "", ""))
 
-	must(t, inbox.Enqueue(ctx, PriorityHeartbeat, sourceHeartbeat, "", "", ""))
-	must(t, inbox.Enqueue(ctx, PriorityTrigger, sourceTrigger, "event data", "", ""))
-	must(t, inbox.Enqueue(ctx, PriorityUser, sourceUser, "urgent msg", "", ""))
-
-	item1, err := inbox.Dequeue(ctx)
+	chat, err := inbox.DequeueChat(ctx)
 	must(t, err)
 
-	if item1.Source != sourceUser {
-		t.Errorf("first dequeue: Source = %q, want %q", item1.Source, sourceUser)
+	if chat.Source != sourceUser {
+		t.Errorf("chat source = %q, want user", chat.Source)
 	}
 
-	item2, err := inbox.Dequeue(ctx)
+	background, err := inbox.DequeueBackground(ctx)
 	must(t, err)
 
-	if item2.Source != sourceTrigger {
-		t.Errorf("second dequeue: Source = %q, want %q", item2.Source, sourceTrigger)
-	}
-
-	item3, err := inbox.Dequeue(ctx)
-	must(t, err)
-
-	if item3.Source != sourceHeartbeat {
-		t.Errorf("third dequeue: Source = %q, want %q", item3.Source, sourceHeartbeat)
-	}
-}
-
-func TestWorker_PreemptsLowerPriority(t *testing.T) {
-	t.Parallel()
-
-	ctx := context.Background()
-	inbox := newTestInbox(ctx, t)
-
-	worker := NewWorker(inbox, PiConfig{SessionDir: t.TempDir()}, "", "")
-
-	// Simulate a heartbeat running by setting worker state directly.
-	cancelled := make(chan struct{})
-
-	worker.mu.Lock()
-	worker.currentPriority = PriorityHeartbeat
-	worker.currentCancel = func() { close(cancelled) }
-	worker.mu.Unlock()
-
-	// Notify with user priority — should preempt the heartbeat.
-	worker.Notify(PriorityUser)
-
-	select {
-	case <-cancelled:
-		// good
-	case <-time.After(1 * time.Second):
-		t.Fatal("preemption did not cancel the running operation")
-	}
-}
-
-func TestWorker_NoPreemptSamePriority(t *testing.T) {
-	t.Parallel()
-
-	ctx := context.Background()
-	inbox := newTestInbox(ctx, t)
-
-	worker := NewWorker(inbox, PiConfig{SessionDir: t.TempDir()}, "", "")
-
-	preempted := false
-
-	worker.mu.Lock()
-	worker.currentPriority = PriorityUser
-	worker.currentCancel = func() { preempted = true }
-	worker.mu.Unlock()
-
-	worker.Notify(PriorityUser)
-
-	if preempted {
-		t.Error("same-priority notify should not preempt")
+	if background.Source != sourceTrigger {
+		t.Errorf("background source = %q, want trigger", background.Source)
 	}
 }
 
@@ -179,14 +120,14 @@ func TestInbox_ClearsStaleItemsOnInit(t *testing.T) {
 		t.Fatalf("count = %d, want 2 (heartbeat and compact should be cleared)", count)
 	}
 
-	item1, err := inbox.Dequeue(ctx)
+	item1, err := inbox.DequeueChat(ctx)
 	must(t, err)
 
 	if item1.Source != sourceUser {
 		t.Errorf("first item source = %q, want %q", item1.Source, sourceUser)
 	}
 
-	item2, err := inbox.Dequeue(ctx)
+	item2, err := inbox.DequeueBackground(ctx)
 	must(t, err)
 
 	if item2.Source != sourceTrigger {
@@ -202,7 +143,7 @@ func TestInbox_UserMetadataSurvivesRequeue(t *testing.T) {
 
 	must(t, inbox.EnqueueUser(ctx, "hello", "$reply", "!room", "$event", true))
 
-	item, err := inbox.Dequeue(ctx)
+	item, err := inbox.DequeueChat(ctx)
 	must(t, err)
 
 	if item.MessageID != "$event" || !item.IsGroup {
@@ -211,7 +152,7 @@ func TestInbox_UserMetadataSurvivesRequeue(t *testing.T) {
 
 	must(t, inbox.Requeue(ctx, item))
 
-	item, err = inbox.Dequeue(ctx)
+	item, err = inbox.DequeueChat(ctx)
 	must(t, err)
 
 	if item.MessageID != "$event" || !item.IsGroup {
@@ -240,7 +181,7 @@ func TestInbox_Persistence(t *testing.T) {
 		t.Fatalf("count after reopen = %d, want 1", count)
 	}
 
-	item, err := inbox2.Dequeue(ctx)
+	item, err := inbox2.DequeueBackground(ctx)
 	must(t, err)
 
 	if item.Content != "survived crash" {

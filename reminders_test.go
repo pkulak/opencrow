@@ -3,95 +3,10 @@ package main
 import (
 	"context"
 	"fmt"
-	"os"
-	"path/filepath"
-	"reflect"
 	"strings"
 	"testing"
 	"time"
 )
-
-func TestParseHeartbeatItems(t *testing.T) {
-	t.Parallel()
-
-	content := `# Heading
-- Check email
--
-- [paused] Review old PRs
-  - Indented item
-prose line
-- Review calendar
-`
-	// Write to WorkingDir and give the worker a distinct SessionDir to
-	// guard against a regression where HEARTBEAT.md was looked up in
-	// SessionDir (pi's jsonl storage) instead of the agent's cwd.
-	workDir := t.TempDir()
-	if err := os.WriteFile(filepath.Join(workDir, "HEARTBEAT.md"), []byte(content), 0o600); err != nil {
-		t.Fatal(err)
-	}
-
-	w := &Worker{piCfg: PiConfig{WorkingDir: workDir, SessionDir: t.TempDir()}}
-
-	got := parseHeartbeatItems(w.readHeartbeatFile())
-	want := []string{"Check email", "Indented item", "Review calendar"}
-
-	if !reflect.DeepEqual(got, want) {
-		t.Errorf("got %q, want %q", got, want)
-	}
-
-	if items := parseHeartbeatItems("# only headers\n\n"); items != nil {
-		t.Errorf("empty file: got %q, want nil", items)
-	}
-}
-
-func TestShouldSuppressReply(t *testing.T) {
-	t.Parallel()
-
-	tests := []struct {
-		name   string
-		reply  string
-		source string
-		want   bool
-	}{
-		// HEARTBEAT_OK only works for heartbeats.
-		{"heartbeat ok", "HEARTBEAT_OK", sourceHeartbeat, true},
-		{"heartbeat ok in text", "all clear HEARTBEAT_OK done", sourceHeartbeat, true},
-		{"heartbeat ok for trigger", "HEARTBEAT_OK", sourceTrigger, false},
-		{"heartbeat ok for user", "HEARTBEAT_OK", sourceUser, false},
-
-		// NO_REPLY works as a first-line trigger/user sentinel so accidental
-		// trailing model output does not turn silence into a public reply.
-		{"no reply for trigger", "NO_REPLY", sourceTrigger, true},
-		{"no reply for user", "NO_REPLY", sourceUser, true},
-		{"no reply with whitespace", "\nNO_REPLY\t", sourceUser, true},
-		{"no reply before trailing output", "NO_REPLY\n\ninternal reasoning", sourceUser, true},
-		{"no reply later in text", "nothing here\nNO_REPLY", sourceTrigger, false},
-		{"no reply on first line with other text", "NO_REPLY is documented", sourceUser, false},
-		{"no reply in user explanation", "In group chats I usually output `NO_REPLY`.", sourceUser, false},
-		{"no reply for heartbeat", "NO_REPLY\ninternal reasoning", sourceHeartbeat, false},
-
-		// Normal replies are never suppressed.
-		{"normal trigger reply", "You have 3 new emails", sourceTrigger, false},
-		{"normal user reply", "Here's the weather", sourceUser, false},
-		{"normal heartbeat reply", "Found urgent email", sourceHeartbeat, false},
-
-		// Empty replies are always suppressed.
-		{"empty heartbeat", "", sourceHeartbeat, true},
-		{"empty trigger", "", sourceTrigger, true},
-		{"empty user", "", sourceUser, true},
-	}
-
-	for _, tt := range tests {
-		t.Run(tt.name, func(t *testing.T) {
-			t.Parallel()
-
-			got := shouldSuppressReply(tt.reply, tt.source)
-			if got != tt.want {
-				t.Errorf("shouldSuppressReply(%q, %q) = %v, want %v", tt.reply, tt.source, got, tt.want)
-			}
-		})
-	}
-}
 
 func TestDispatchDueReminders(t *testing.T) {
 	t.Parallel()
@@ -120,7 +35,7 @@ func TestDispatchDueReminders(t *testing.T) {
 	dispatchDueReminders(ctx, w)
 
 	// Due reminder should now be a trigger item in the inbox.
-	item, err := inbox.Dequeue(ctx)
+	item, err := inbox.DequeueBackground(ctx)
 	if err != nil {
 		t.Fatalf("expected one inbox item, got error: %v", err)
 	}
@@ -176,7 +91,7 @@ func TestDispatchRecurringReminders(t *testing.T) {
 
 	dispatchRecurringReminders(ctx, w, now)
 
-	item, err := inbox.Dequeue(ctx)
+	item, err := inbox.DequeueBackground(ctx)
 	if err != nil {
 		t.Fatalf("expected one inbox item, got error: %v", err)
 	}
@@ -232,7 +147,7 @@ func TestDispatchRecurringRemindersCapsInbox(t *testing.T) {
 	}
 
 	for i := int64(1); i <= recurringInboxLimit; i++ {
-		item, err := inbox.Dequeue(ctx)
+		item, err := inbox.DequeueBackground(ctx)
 		if err != nil {
 			t.Fatal(err)
 		}
@@ -240,6 +155,39 @@ func TestDispatchRecurringRemindersCapsInbox(t *testing.T) {
 		if want := fmt.Sprintf("Series ID: %d", i); !strings.Contains(item.Content, want) {
 			t.Errorf("content %q does not contain %q", item.Content, want)
 		}
+	}
+}
+
+func TestDispatchRecurringRemindersIgnoresChatBacklog(t *testing.T) {
+	t.Parallel()
+
+	ctx := context.Background()
+	db := newTestDB(ctx, t)
+	inbox := newTestInboxWithDB(ctx, t, db)
+	w := &Worker{inbox: inbox, wake: make(chan struct{}, 1)}
+	now := time.Date(2026, time.January, 5, 12, 0, 30, 0, time.UTC)
+
+	for range recurringInboxLimit {
+		if err := inbox.EnqueueUser(ctx, "chat", "", "room", "", false); err != nil {
+			t.Fatal(err)
+		}
+	}
+
+	if _, err := db.ExecContext(ctx,
+		`INSERT INTO recurring_reminders (cron, timezone, prompt) VALUES ('0 12 * * *', 'UTC', 'background reminder')`,
+	); err != nil {
+		t.Fatal(err)
+	}
+
+	dispatchRecurringReminders(ctx, w, now)
+
+	item, err := inbox.DequeueBackground(ctx)
+	if err != nil {
+		t.Fatalf("expected recurring reminder despite chat backlog: %v", err)
+	}
+
+	if !strings.Contains(item.Content, "background reminder") {
+		t.Errorf("content %q missing reminder prompt", item.Content)
 	}
 }
 

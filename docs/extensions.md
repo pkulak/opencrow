@@ -43,7 +43,7 @@ need to be added to `extraPackages`.
 services.opencrow.extensions.reminders = true;
 ```
 
-See [Heartbeat & Reminders](heartbeat.md) for usage details and
+See [Reminders](reminders.md) for usage details and
 [`extensions/reminders/`](../extensions/reminders/) for the source.
 
 ## Writing an extension

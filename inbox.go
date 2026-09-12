@@ -7,11 +7,10 @@ import (
 	"log/slog"
 )
 
-// Priority levels for inbox items. Lower number = higher priority.
+// Priority levels are retained for compatibility with existing inbox rows.
 const (
-	PriorityUser      = 0
-	PriorityTrigger   = 1
-	PriorityHeartbeat = 2
+	PriorityUser    = 0
+	PriorityTrigger = 1
 )
 
 //go:generate sqlc generate
@@ -22,12 +21,12 @@ type InboxStore struct {
 }
 
 // NewInboxStore wraps an existing database connection. The schema must
-// already be applied (openDB handles this). Clears stale heartbeat and
+// already be applied (openDB handles this). Clears stale legacy heartbeat and
 // compact items left over from a previous crash.
 func NewInboxStore(ctx context.Context, db *sql.DB) (*InboxStore, error) {
 	queries := New(db)
 
-	// Heartbeat and compact items have in-memory state that doesn't
+	// Legacy heartbeat and compact items have in-memory state that doesn't
 	// survive a restart, so purge any left over from a previous run.
 	if err := queries.DeleteStaleItems(ctx); err != nil {
 		return nil, fmt.Errorf("clearing stale inbox items: %w", err)
@@ -61,19 +60,18 @@ func (s *InboxStore) EnqueueUser(ctx context.Context, content, replyTo, conversa
 	})
 }
 
-// Dequeue removes and returns the highest-priority (lowest number) item.
-// Returns sql.ErrNoRows if the inbox is empty.
-func (s *InboxStore) Dequeue(ctx context.Context) (Inbox, error) {
-	return s.queries.DequeueInbox(ctx)
+// DequeueChat removes and returns a chat item. Returns sql.ErrNoRows if none exist.
+func (s *InboxStore) DequeueChat(ctx context.Context) (Inbox, error) {
+	return s.queries.DequeueChatInbox(ctx)
 }
 
-// Requeue re-inserts an item that was interrupted. Heartbeat markers are
-// dropped since the timer will re-fire.
-func (s *InboxStore) Requeue(ctx context.Context, item Inbox) error {
-	if item.Source == sourceHeartbeat {
-		return nil
-	}
+// DequeueBackground removes and returns a background item. Returns sql.ErrNoRows if none exist.
+func (s *InboxStore) DequeueBackground(ctx context.Context) (Inbox, error) {
+	return s.queries.DequeueBackgroundInbox(ctx)
+}
 
+// Requeue re-inserts an interrupted item.
+func (s *InboxStore) Requeue(ctx context.Context, item Inbox) error {
 	if err := s.queries.EnqueueInbox(ctx, EnqueueInboxParams{
 		Priority:       item.Priority,
 		Source:         item.Source,
@@ -94,20 +92,9 @@ func (s *InboxStore) Count(ctx context.Context) (int64, error) {
 	return s.queries.CountInbox(ctx)
 }
 
-// EnqueueHeartbeat atomically inserts a heartbeat marker only if none
-// is already pending. Returns true if a row was inserted.
-func (s *InboxStore) EnqueueHeartbeat(ctx context.Context) (bool, error) {
-	result, err := s.queries.EnqueueHeartbeatIfEmpty(ctx, PriorityHeartbeat)
-	if err != nil {
-		return false, fmt.Errorf("enqueuing heartbeat: %w", err)
-	}
-
-	n, err := result.RowsAffected()
-	if err != nil {
-		return false, fmt.Errorf("checking heartbeat insert result: %w", err)
-	}
-
-	return n > 0, nil
+// CountBackground returns the number of queued trigger items.
+func (s *InboxStore) CountBackground(ctx context.Context) (int64, error) {
+	return s.queries.CountBackgroundInbox(ctx)
 }
 
 func (s *InboxStore) enqueue(ctx context.Context, params EnqueueInboxParams) error {

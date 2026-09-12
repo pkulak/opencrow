@@ -18,7 +18,7 @@ func TestTriggerPipeReader_EnqueuesLines(t *testing.T) {
 
 	dir := t.TempDir()
 
-	worker := NewWorker(inbox, PiConfig{SessionDir: dir}, "", "")
+	worker := NewBackgroundWorker(inbox, PiConfig{SessionDir: dir}, "")
 	startTriggerPipe(ctx, worker, dir)
 
 	pipePath := TriggerPipePath(dir)
@@ -26,7 +26,7 @@ func TestTriggerPipeReader_EnqueuesLines(t *testing.T) {
 	writeToPipe(t, pipePath, "first trigger\nsecond trigger\n")
 	waitForInboxCount(ctx, t, inbox, 2)
 
-	item1, err := inbox.Dequeue(ctx)
+	item1, err := inbox.DequeueBackground(ctx)
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -43,7 +43,7 @@ func TestTriggerPipeReader_EnqueuesLines(t *testing.T) {
 		t.Errorf("item1.Content = %q, want %q", item1.Content, "first trigger")
 	}
 
-	item2, err := inbox.Dequeue(ctx)
+	item2, err := inbox.DequeueBackground(ctx)
 	if err != nil {
 		t.Fatal(err)
 	}

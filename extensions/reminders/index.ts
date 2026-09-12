@@ -137,8 +137,9 @@ export default function remindersExtension(pi: ExtensionAPI) {
     name: "remind_at",
     label: "Set reminder",
     description:
-      "Schedule a one-shot reminder. The prompt is delivered back as a " +
-      "trigger message at the given time (±1 min), then auto-deleted.",
+      "Schedule a one-shot reminder. The prompt is delivered to the separate " +
+      "background agent at the given time (±1 min), then auto-deleted. Make " +
+      "the prompt self-contained: it cannot see this chat's history.",
     parameters: Type.Object({
       when: Type.String({
         description:
@@ -173,7 +174,8 @@ export default function remindersExtension(pi: ExtensionAPI) {
     name: "remind_cron",
     label: "Set recurring reminder",
     description:
-      "Schedule a recurring reminder using a five-field cron expression. " +
+      "Schedule a recurring reminder using a five-field cron expression. The " +
+      "prompt runs in a separate background session, so it must be self-contained. " +
       "Matching is checked once per minute in the supplied IANA timezone. " +
       "Missed or failed occurrences are not retried. Day-of-month and " +
       "day-of-week use standard cron OR semantics when both are restricted.",

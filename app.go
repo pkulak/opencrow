@@ -138,6 +138,7 @@ func extractSendTo(text string) (string, string) {
 type App struct {
 	matrix            appMatrix
 	worker            *Worker
+	backgroundWorker  *Worker
 	inbox             *InboxStore
 	outbox            *outboxStore
 	groupTriggerRegex *regexp.Regexp
@@ -157,6 +158,9 @@ func NewApp(matrixClient appMatrix, worker *Worker, inbox *InboxStore, db *sql.D
 		filterStates: make(map[string]*conversationFilterState),
 	}
 }
+
+// SetBackgroundWorker wires the background worker after construction.
+func (a *App) SetBackgroundWorker(worker *Worker) { a.backgroundWorker = worker }
 
 // SetGroupTriggerRegex configures the regex used to filter unaddressed group messages.
 func (a *App) SetGroupTriggerRegex(re *regexp.Regexp) {
@@ -178,6 +182,10 @@ func (a *App) HandleMessage(ctx context.Context, msg matrix.Message) {
 		a.handleRestart(ctx, msg)
 	case "!stop":
 		a.handleStop(ctx, msg)
+	case "!background-stop":
+		a.handleBackgroundStop(ctx, msg)
+	case "!background-restart":
+		a.handleBackgroundRestart(ctx, msg)
 	case "!compact":
 		a.handleCompact(ctx, msg)
 	case "!skills":
@@ -193,7 +201,9 @@ func (a *App) handleHelp(ctx context.Context, msg matrix.Message) {
 		"  !restart — Kill the current session and start fresh\n" +
 		"  !stop    — Abort the currently running agent turn\n" +
 		"  !compact — Compact conversation context to reduce token usage\n" +
-		"  !skills  — List loaded skills"
+		"  !skills  — List loaded skills\n" +
+		"  !background-stop — Abort the active background task\n" +
+		"  !background-restart — Restart the background session"
 	a.matrix.SendMessage(ctx, msg.ConversationID, help, "")
 }
 
@@ -201,6 +211,27 @@ func (a *App) handleRestart(ctx context.Context, msg matrix.Message) {
 	a.matrix.ResetConversation(ctx, msg.ConversationID)
 	a.worker.Restart()
 	a.matrix.SendMessage(ctx, msg.ConversationID, "Session restarted. Next message starts a fresh session (previous context discarded).", "")
+}
+
+func (a *App) handleBackgroundStop(ctx context.Context, msg matrix.Message) {
+	if a.backgroundWorker == nil || !a.backgroundWorker.IsActive() || !a.backgroundWorker.Abort() {
+		a.matrix.SendMessage(ctx, msg.ConversationID, "No active background task.", "")
+
+		return
+	}
+
+	a.matrix.SendMessage(ctx, msg.ConversationID, "Aborted background task.", "")
+}
+
+func (a *App) handleBackgroundRestart(ctx context.Context, msg matrix.Message) {
+	if a.backgroundWorker == nil {
+		a.matrix.SendMessage(ctx, msg.ConversationID, "No background worker.", "")
+
+		return
+	}
+
+	a.backgroundWorker.Restart()
+	a.matrix.SendMessage(ctx, msg.ConversationID, "Background session restarted. Next background task starts fresh.", "")
 }
 
 func (a *App) handleStop(ctx context.Context, msg matrix.Message) {
@@ -260,6 +291,11 @@ func (a *App) handlePrompt(ctx context.Context, msg matrix.Message) {
 
 	a.worker.SetRoomID(msg.ConversationID)
 
+	if a.backgroundWorker != nil {
+		a.backgroundWorker.SetRoomID(msg.ConversationID)
+		a.backgroundWorker.Notify()
+	}
+
 	promptText := a.buildPromptText(ctx, msg, buffered)
 
 	if err := a.inbox.EnqueueUser(ctx, promptText, msg.ReplyToID, msg.ConversationID, msg.MessageID, !msg.IsDM); err != nil {
@@ -269,7 +305,7 @@ func (a *App) handlePrompt(ctx context.Context, msg matrix.Message) {
 		return
 	}
 
-	a.worker.Notify(PriorityUser)
+	a.worker.Notify()
 }
 
 // buildPromptText prepends context tags, buffered recent messages, and reply-quote context to the message text.
@@ -443,9 +479,10 @@ func (a *App) sendReaction(ctx context.Context, conversationID string, reaction 
 	}
 }
 
-// sendReplyWithFiles extracts <sendfile> tags, uploads each file, and
-// sends the final text reply.
-func (a *App) sendReplyWithFiles(ctx context.Context, conversationID, reply, replyToID string) {
+// sendReplyWithFiles extracts <sendfile> tags, uploads each file, and sends
+// the final text reply. reportFileErrors controls whether upload failures are
+// included in that reply; background infrastructure failures remain log-only.
+func (a *App) sendReplyWithFiles(ctx context.Context, conversationID, reply, replyToID string, reportFileErrors bool) {
 	slog.Info("sending reply", "conversation", conversationID, "len", len(reply))
 	slog.Debug("outgoing reply content", "conversation", conversationID, "content", reply)
 
@@ -458,7 +495,10 @@ func (a *App) sendReplyWithFiles(ctx context.Context, conversationID, reply, rep
 
 		if err := a.matrix.SendFile(ctx, conversationID, fp); err != nil {
 			slog.Error("failed to send file", "conversation", conversationID, "path", fp, "error", err)
-			fmt.Fprintf(&fileSendErrors, "\n\n(failed to send file %s: %v)", filepath.Base(fp), err)
+
+			if reportFileErrors {
+				fmt.Fprintf(&fileSendErrors, "\n\n(failed to send file %s: %v)", filepath.Base(fp), err)
+			}
 		}
 	}
 

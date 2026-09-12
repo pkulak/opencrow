@@ -61,7 +61,7 @@ func triggerReadLoop(ctx context.Context, w *Worker, pipePath string) {
 			continue
 		}
 
-		w.Notify(PriorityTrigger)
+		w.Notify()
 	}
 
 	if err := scanner.Err(); err != nil && ctx.Err() == nil {

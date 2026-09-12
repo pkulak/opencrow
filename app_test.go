@@ -2,6 +2,7 @@ package main
 
 import (
 	"context"
+	"errors"
 	"regexp"
 	"strconv"
 	"strings"
@@ -27,6 +28,7 @@ type mockMatrix struct {
 	resetCalls            []string
 	reactions             []reactionCall
 	systemPromptExtraText string
+	sendFileErr           error
 }
 
 type sentMessage struct {
@@ -74,7 +76,7 @@ func (m *mockMatrix) SendFile(_ context.Context, conversationID string, filePath
 
 	m.sentFiles = append(m.sentFiles, sentFile{conversationID, filePath})
 
-	return nil
+	return m.sendFileErr
 }
 
 func (m *mockMatrix) SetTyping(_ context.Context, conversationID string, typing bool) {
@@ -111,7 +113,7 @@ func newTestAppWithMatrix(t *testing.T, matrixClient *mockMatrix) *App {
 	db := newTestDB(ctx, t)
 	inbox := newTestInboxWithDB(ctx, t, db)
 
-	worker := NewWorker(inbox, PiConfig{SessionDir: t.TempDir()}, "", "")
+	worker := NewWorker(inbox, PiConfig{SessionDir: t.TempDir()})
 	worker.SetMatrix(matrixClient)
 
 	app := NewApp(matrixClient, worker, inbox, db)
@@ -218,6 +220,39 @@ func TestExtractSendTo(t *testing.T) {
 	}
 }
 
+func TestSendReplyWithFilesReportsFailuresOnlyForChat(t *testing.T) {
+	t.Parallel()
+
+	for _, tc := range []struct {
+		name         string
+		reportErrors bool
+		wantError    bool
+	}{
+		{"chat", true, true},
+		{"background", false, false},
+	} {
+		t.Run(tc.name, func(t *testing.T) {
+			t.Parallel()
+
+			matrixClient := &mockMatrix{sendFileErr: errors.New("upload failed")}
+			app := newTestAppWithMatrix(t, matrixClient)
+			app.sendReplyWithFiles(t.Context(), testRoom, "Report\n<sendfile>/tmp/report.txt</sendfile>", "", tc.reportErrors)
+
+			matrixClient.mu.Lock()
+			defer matrixClient.mu.Unlock()
+
+			if len(matrixClient.sentMessages) != 1 {
+				t.Fatalf("sent messages = %d, want 1", len(matrixClient.sentMessages))
+			}
+
+			hasError := strings.Contains(matrixClient.sentMessages[0].text, "failed to send file")
+			if hasError != tc.wantError {
+				t.Errorf("reply = %q, want upload error=%v", matrixClient.sentMessages[0].text, tc.wantError)
+			}
+		})
+	}
+}
+
 // TestApp_Commands covers the !-commands that reply with a single message.
 // Each case only differs in the input command and what substrings the
 // reply must contain, so a table avoids repeating the setup/assert
@@ -235,7 +270,7 @@ func TestApp_Commands(t *testing.T) {
 		{"compact no session", "!compact", []string{"No active session"}, false},
 		{"compact trailing whitespace", "!compact ", []string{"No active session"}, false},
 		{"help trailing newline", "!help\n", []string{"!help", "!restart"}, false},
-		{"help", "!help", []string{"!help", "!restart", "!stop", "!compact", "!skills"}, false},
+		{"help", "!help", []string{"!help", "!restart", "!stop", "!compact", "!skills", "!background-stop", "!background-restart"}, false},
 		{"restart", "!restart", []string{"Session restarted"}, true},
 		{"skills", "!skills", []string{"No skills loaded"}, false},
 	}
@@ -276,6 +311,35 @@ func TestApp_Commands(t *testing.T) {
 	}
 }
 
+func TestApp_BackgroundCommands(t *testing.T) {
+	t.Parallel()
+
+	app, matrixClient := newTestApp(t)
+	app.SetBackgroundWorker(NewBackgroundWorker(app.inbox, PiConfig{}, ""))
+
+	sendCommand(app, "!background-stop")
+	sendCommand(app, "!background-restart")
+
+	matrixClient.mu.Lock()
+	defer matrixClient.mu.Unlock()
+
+	if len(matrixClient.sentMessages) != 2 {
+		t.Fatalf("sent messages = %d, want 2", len(matrixClient.sentMessages))
+	}
+
+	if !strings.Contains(matrixClient.sentMessages[0].text, "No active background task") {
+		t.Errorf("stop reply = %q", matrixClient.sentMessages[0].text)
+	}
+
+	if !strings.Contains(matrixClient.sentMessages[1].text, "Background session restarted") {
+		t.Errorf("restart reply = %q", matrixClient.sentMessages[1].text)
+	}
+
+	if len(matrixClient.resetCalls) != 0 {
+		t.Errorf("background commands reset Matrix state: %v", matrixClient.resetCalls)
+	}
+}
+
 func TestApp_PromptEnqueuesInbox(t *testing.T) {
 	t.Parallel()
 
@@ -299,7 +363,7 @@ func TestApp_PromptEnqueuesInbox(t *testing.T) {
 		t.Fatalf("inbox count = %d, want 1", count)
 	}
 
-	item, err := app.inbox.Dequeue(ctx)
+	item, err := app.inbox.DequeueChat(ctx)
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -577,7 +641,7 @@ func TestApp_EnqueuesMessageMetadata(t *testing.T) {
 		IsDM:           false,
 	})
 
-	item, err := app.inbox.Dequeue(t.Context())
+	item, err := app.inbox.DequeueChat(t.Context())
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -598,7 +662,7 @@ func TestInbox_ConversationID(t *testing.T) {
 		t.Fatal(err)
 	}
 
-	item, err := inbox.Dequeue(ctx)
+	item, err := inbox.DequeueChat(ctx)
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -612,7 +676,7 @@ func TestInbox_ConversationID(t *testing.T) {
 		t.Fatal(err)
 	}
 
-	item2, err := inbox.Dequeue(ctx)
+	item2, err := inbox.DequeueBackground(ctx)
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -764,7 +828,7 @@ func TestApp_GroupFilter_TriggerPrependsBufferAndClearsIt(t *testing.T) {
 		t.Fatalf("inbox count = %d, want 1", count)
 	}
 
-	item, err := app.inbox.Dequeue(ctx)
+	item, err := app.inbox.DequeueChat(ctx)
 	if err != nil {
 		t.Fatal(err)
 	}

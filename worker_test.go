@@ -7,6 +7,7 @@ import (
 	"path/filepath"
 	"strconv"
 	"strings"
+	"sync"
 	"syscall"
 	"testing"
 	"time"
@@ -22,7 +23,53 @@ func (stubMatrix) SendMessage(context.Context, string, string, string) string { 
 func newFakePiWorker(t *testing.T) *Worker {
 	t.Helper()
 
-	dir := t.TempDir()
+	return newFakePiWorkerMode(t, false)
+}
+
+func newFakeBackgroundPiWorker(t *testing.T) *Worker {
+	t.Helper()
+
+	return newFakePiWorkerMode(t, true)
+}
+
+func newFakePiWorkerMode(t *testing.T, background bool) *Worker {
+	t.Helper()
+
+	stateDir := t.TempDir()
+
+	script, err := filepath.Abs("testdata/fake-pi")
+	if err != nil {
+		t.Fatal(err)
+	}
+
+	cfg := PiConfig{
+		BinaryPath: "bash",
+		BinaryArgs: []string{script},
+		SessionDir: stateDir,
+		StateDir:   stateDir,
+		WorkingDir: stateDir,
+	}
+
+	var w *Worker
+
+	if background {
+		cfg.SessionDir = filepath.Join(stateDir, "background")
+		w = NewBackgroundWorker(newTestInbox(t.Context(), t), cfg, "")
+	} else {
+		w = NewWorker(newTestInbox(t.Context(), t), cfg)
+	}
+
+	w.SetMatrix(stubMatrix{})
+	w.SetRoomID("room")
+	t.Cleanup(w.stopPi)
+
+	return w
+}
+
+func newBlockedFakePiWorker(t *testing.T) *Worker {
+	t.Helper()
+
+	stateDir := t.TempDir()
 
 	script, err := filepath.Abs("testdata/fake-pi")
 	if err != nil {
@@ -31,13 +78,13 @@ func newFakePiWorker(t *testing.T) *Worker {
 
 	w := NewWorker(newTestInbox(t.Context(), t), PiConfig{
 		BinaryPath: "bash",
-		BinaryArgs: []string{script},
-		SessionDir: dir,
-		WorkingDir: dir,
-	}, "", "")
+		BinaryArgs: []string{script, "--never-read"},
+		SessionDir: stateDir,
+		StateDir:   stateDir,
+		WorkingDir: stateDir,
+	})
 	w.SetMatrix(stubMatrix{})
 	w.SetRoomID("room")
-
 	t.Cleanup(w.stopPi)
 
 	return w
@@ -72,7 +119,7 @@ func TestBuildPrompt_InjectsTimestamp(t *testing.T) {
 
 	db := newTestDBAt(t.Context(), t, t.TempDir()+"/test.db")
 	inbox := newTestInboxWithDB(t.Context(), t, db)
-	w := NewWorker(inbox, PiConfig{}, "", "")
+	w := NewWorker(inbox, PiConfig{})
 
 	prompt, ok := w.buildPrompt(Inbox{Source: sourceUser, Content: "hello"})
 	if !ok {
@@ -85,27 +132,6 @@ func TestBuildPrompt_InjectsTimestamp(t *testing.T) {
 
 	if !strings.Contains(prompt, "hello") {
 		t.Errorf("buildPrompt = %q, want original content present", prompt)
-	}
-}
-
-func TestWorker_RequeuePreemptedHeartbeat(t *testing.T) {
-	t.Parallel()
-
-	ctx := t.Context()
-	inbox := newTestInbox(ctx, t)
-	w := NewWorker(inbox, PiConfig{}, "", "")
-
-	if !w.requeuePreempted(Inbox{Priority: PriorityHeartbeat, Source: sourceHeartbeat}) {
-		t.Fatal("requeuePreempted returned false, want true")
-	}
-
-	count, err := inbox.Count(ctx)
-	if err != nil {
-		t.Fatal(err)
-	}
-
-	if count != 0 {
-		t.Errorf("inbox count = %d, want 0", count)
 	}
 }
 
@@ -337,7 +363,7 @@ func TestWorker_TypingStartsAndClears(t *testing.T) {
 	t.Parallel()
 
 	mb := &mockMatrix{}
-	w := NewWorker(nil, PiConfig{}, "", "")
+	w := NewWorker(nil, PiConfig{})
 	w.SetMatrix(mb)
 
 	stopTyping := w.startTyping(t.Context(), "room")
@@ -400,6 +426,229 @@ func waitForTypingCalls(t *testing.T, matrixClient *mockMatrix, n int) []typingC
 
 		if time.Now().After(deadline) {
 			t.Fatalf("typing calls = %+v, want at least %d", got, n)
+		}
+
+		time.Sleep(5 * time.Millisecond)
+	}
+}
+
+func TestShouldSuppressReply(t *testing.T) {
+	t.Parallel()
+
+	for _, tc := range []struct {
+		name  string
+		reply string
+		want  bool
+	}{
+		{"no reply", "NO_REPLY", true},
+		{"no reply with trailing output", "NO_REPLY\ninternal notes", true},
+		{"no reply later", "result\nNO_REPLY", false},
+		{"no reply with other text", "NO_REPLY is documented", false},
+		{"empty", "", true},
+		{"normal", "done", false},
+	} {
+		t.Run(tc.name, func(t *testing.T) {
+			t.Parallel()
+
+			if got := shouldSuppressReply(tc.reply, sourceTrigger); got != tc.want {
+				t.Errorf("shouldSuppressReply(%q) = %v, want %v", tc.reply, got, tc.want)
+			}
+		})
+	}
+}
+
+func TestWorker_BackgroundProviderFailureIsSilent(t *testing.T) {
+	t.Parallel()
+
+	w := newFakeBackgroundPiWorker(t)
+	matrixClient := &mockMatrix{}
+	w.SetMatrix(matrixClient)
+
+	w.processItem(t.Context(), Inbox{Source: sourceTrigger, Content: "provider-error-test"})
+
+	matrixClient.mu.Lock()
+	defer matrixClient.mu.Unlock()
+
+	if len(matrixClient.sentMessages) != 0 {
+		t.Errorf("background provider failure sent messages: %+v", matrixClient.sentMessages)
+	}
+}
+
+func TestWorker_BackgroundToolCallsAreSilent(t *testing.T) {
+	t.Parallel()
+
+	w := newFakeBackgroundPiWorker(t)
+	w.piCfg.ShowToolCalls = true
+	matrixClient := &mockMatrix{}
+	w.SetMatrix(matrixClient)
+
+	db := newTestDB(t.Context(), t)
+	app := NewApp(matrixClient, w, newTestInboxWithDB(t.Context(), t, db), db)
+	w.SetApp(app)
+
+	w.processItem(t.Context(), Inbox{Source: sourceTrigger, Content: "tool-use-test"})
+
+	matrixClient.mu.Lock()
+	defer matrixClient.mu.Unlock()
+
+	if len(matrixClient.sentMessages) != 1 || matrixClient.sentMessages[0].text != "Tool work complete" {
+		t.Errorf("background messages = %+v, want only final reply", matrixClient.sentMessages)
+	}
+}
+
+func TestWorker_ChatProviderFailureHasRecoveryCommands(t *testing.T) {
+	t.Parallel()
+
+	w := newFakePiWorker(t)
+	matrixClient := &mockMatrix{}
+	w.SetMatrix(matrixClient)
+
+	w.processItem(t.Context(), Inbox{
+		Source:         sourceUser,
+		Content:        "provider-error-test",
+		ConversationID: "room",
+	})
+
+	matrixClient.mu.Lock()
+	defer matrixClient.mu.Unlock()
+
+	if len(matrixClient.sentMessages) != 1 {
+		t.Fatalf("chat provider failure sent %d messages, want 1", len(matrixClient.sentMessages))
+	}
+
+	for _, want := range []string{"provider unavailable", "!compact", "!restart"} {
+		if !strings.Contains(matrixClient.sentMessages[0].text, want) {
+			t.Errorf("failure reply %q missing %q", matrixClient.sentMessages[0].text, want)
+		}
+	}
+}
+
+func TestWorker_AbortStopsPiBlockedOnStdin(t *testing.T) {
+	t.Parallel()
+
+	w := newBlockedFakePiWorker(t)
+	done := make(chan struct{})
+
+	go func() {
+		w.processItem(t.Context(), Inbox{
+			Source:         sourceUser,
+			Content:        strings.Repeat("x", 1<<20),
+			ConversationID: "room",
+		})
+		close(done)
+	}()
+
+	waitForWorkerActive(t, w)
+
+	if !w.Abort() {
+		t.Fatal("Abort returned false for active item")
+	}
+
+	waitForSignal(t, done, "cancelled item did not stop")
+
+	if w.IsActive() {
+		t.Fatal("Pi process remained active after abort")
+	}
+}
+
+func TestWorker_RunStopsPiBlockedOnStdin(t *testing.T) {
+	t.Parallel()
+
+	w := newBlockedFakePiWorker(t)
+	ctx, cancel := context.WithCancel(t.Context())
+	done := make(chan struct{})
+
+	if err := w.inbox.EnqueueUser(ctx, strings.Repeat("x", 1<<20), "", "room", "", false); err != nil {
+		t.Fatal(err)
+	}
+
+	go func() {
+		w.Run(ctx)
+		close(done)
+	}()
+
+	waitForWorkerActive(t, w)
+	cancel()
+	waitForSignal(t, done, "worker shutdown blocked on Pi stdin")
+}
+
+func TestBackgroundWorker_RestartDuringStartupStartsFreshSession(t *testing.T) {
+	t.Parallel()
+
+	w := newFakeBackgroundPiWorker(t)
+	realStartPi := w.startPi
+	startupEntered := make(chan struct{})
+	allowStartup := make(chan struct{})
+
+	var startupOnce sync.Once
+
+	w.startPi = func(cfg PiConfig, roomID string, fresh bool) (*PiProcess, error) {
+		startupOnce.Do(func() {
+			close(startupEntered)
+			<-allowStartup
+		})
+
+		return realStartPi(cfg, roomID, fresh)
+	}
+
+	itemDone := make(chan struct{})
+
+	go func() {
+		w.processItem(t.Context(), Inbox{Source: sourceTrigger, Content: "hang-test"})
+		close(itemDone)
+	}()
+
+	<-startupEntered
+
+	if w.mu.TryLock() {
+		w.mu.Unlock()
+		t.Fatal("worker mutex was not held across Pi startup and publication")
+	}
+
+	restartDone := make(chan struct{})
+
+	go func() {
+		w.Restart()
+		close(restartDone)
+	}()
+
+	close(allowStartup)
+	waitForSignal(t, restartDone, "Restart did not finish after startup completed")
+	waitForSignal(t, itemDone, "restarted item did not stop")
+
+	w.processItem(t.Context(), Inbox{Source: sourceTrigger, Content: "silent-test"})
+
+	args, err := os.ReadFile(filepath.Join(w.piCfg.StateDir, "pi.args"))
+	if err != nil {
+		t.Fatal(err)
+	}
+
+	if strings.Contains(string(args), "--continue") {
+		t.Errorf("fresh background process args contain --continue: %q", args)
+	}
+
+	if !strings.Contains(string(args), w.piCfg.SessionDir) {
+		t.Errorf("background process args %q missing session dir %q", args, w.piCfg.SessionDir)
+	}
+}
+
+func waitForSignal(t *testing.T, ch <-chan struct{}, message string) {
+	t.Helper()
+
+	select {
+	case <-ch:
+	case <-time.After(2 * time.Second):
+		t.Fatal(message)
+	}
+}
+
+func waitForWorkerActive(t *testing.T, w *Worker) {
+	t.Helper()
+
+	deadline := time.Now().Add(2 * time.Second)
+	for !w.IsActive() {
+		if time.Now().After(deadline) {
+			t.Fatal("worker did not start Pi process")
 		}
 
 		time.Sleep(5 * time.Millisecond)
