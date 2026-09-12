@@ -1,17 +1,19 @@
 /**
- * Reminders Extension — one-shot scheduled prompts for opencrow
+ * Reminders Extension — scheduled prompts for opencrow
  *
- * Gives the LLM structured tools to manage rows in the `reminders` table
- * of opencrow.db. The Go-side scheduler polls that table every minute and
- * delivers due reminders as trigger messages, deleting them atomically.
+ * Gives the LLM structured tools to manage one-shot reminders and recurring
+ * cron series in opencrow.db. The Go-side scheduler polls both tables every
+ * minute and delivers matching reminders as trigger messages.
  *
  * Tools:
- *   remind_at(when, prompt) → id   — schedule a one-shot reminder
- *   remind_list()           → rows — list pending reminders
- *   remind_cancel(id)              — delete a reminder
+ *   remind_at(when, prompt)                         — schedule a one-shot reminder
+ *   remind_cron(cron, timezone, prompt, end_at?)   — schedule a recurring reminder
+ *   remind_list()                                  — list active reminders
+ *   remind_cancel(id)                              — cancel a one-shot reminder
+ *   remind_cron_cancel(id)                         — cancel a recurring reminder
  *
- * The extension only writes to SQLite; all scheduling, delivery and
- * cleanup is owned by the opencrow process.
+ * The extension only writes to SQLite; all scheduling, delivery and cleanup
+ * is owned by the opencrow process.
  */
 
 import type { ExtensionAPI } from "@mariozechner/pi-coding-agent";
@@ -81,6 +83,34 @@ function normalizeWhen(when: string): string {
   return new Date(ms).toISOString().replace(/\.\d{3}Z$/, "Z");
 }
 
+function normalizeCron(expression: string): string {
+  const value = expression.trim().replace(/\s+/g, " ");
+  if (value.split(" ").length !== 5) {
+    throw new Error(
+      `invalid cron expression '${expression}' — expected exactly five fields: ` +
+        "minute hour day-of-month month day-of-week",
+    );
+  }
+  return value;
+}
+
+function normalizeTimezone(timezone: string): string {
+  const value = timezone.trim();
+  if (!value || /^[+-]\d{2}:?\d{2}$/.test(value)) {
+    throw new Error(
+      `invalid timezone '${timezone}' — use an IANA name, e.g. America/Los_Angeles`,
+    );
+  }
+
+  try {
+    return new Intl.DateTimeFormat("en-US", { timeZone: value }).resolvedOptions().timeZone;
+  } catch {
+    throw new Error(
+      `invalid timezone '${timezone}' — use an IANA name, e.g. America/Los_Angeles`,
+    );
+  }
+}
+
 export default function remindersExtension(pi: ExtensionAPI) {
   if (!DB_PATH) {
     // OPENCROW_SESSION_DIR is exported by opencrow's StartPi; if it is
@@ -140,13 +170,73 @@ export default function remindersExtension(pi: ExtensionAPI) {
   });
 
   pi.registerTool({
+    name: "remind_cron",
+    label: "Set recurring reminder",
+    description:
+      "Schedule a recurring reminder using a five-field cron expression. " +
+      "Matching is checked once per minute in the supplied IANA timezone. " +
+      "Missed or failed occurrences are not retried. Day-of-month and " +
+      "day-of-week use standard cron OR semantics when both are restricted.",
+    parameters: Type.Object({
+      cron: Type.String({
+        description:
+          "Five-field cron expression: minute hour day-of-month month day-of-week, " +
+          "e.g. '0 12 * * 1' for Mondays at noon.",
+      }),
+      timezone: Type.String({
+        description: "IANA timezone name, e.g. America/Los_Angeles.",
+      }),
+      prompt: Type.String({
+        description: "Message to deliver whenever the cron schedule matches.",
+      }),
+      end_at: Type.Optional(
+        Type.String({
+          description:
+            "Optional inclusive end time as an ISO 8601 timestamp with explicit " +
+            "timezone, e.g. 2026-12-31T23:59:00-08:00.",
+        }),
+      ),
+    }),
+    async execute(_id, params, signal) {
+      const expression = normalizeCron(params.cron);
+      const timezone = normalizeTimezone(params.timezone);
+      const endAt = params.end_at ? normalizeWhen(params.end_at) : undefined;
+      const out = await sqlite(
+        `INSERT INTO recurring_reminders (cron, timezone, end_at, prompt) VALUES (` +
+          `${q(expression)}, ${q(timezone)}, ${endAt ? q(endAt) : "NULL"}, ${q(params.prompt)}); ` +
+          `SELECT last_insert_rowid();`,
+        signal,
+      );
+      return {
+        content: [
+          {
+            type: "text",
+            text:
+              `Recurring reminder #${out} set for '${expression}' in ${timezone}` +
+              (endAt ? ` through ${endAt}.` : "."),
+          },
+        ],
+        details: {
+          id: Number(out),
+          cron: expression,
+          timezone,
+          end_at: endAt,
+        },
+      };
+    },
+  });
+
+  pi.registerTool({
     name: "remind_list",
     label: "List reminders",
-    description: "List pending reminders (id, fire_at, prompt).",
+    description: "List pending one-shot reminders and active recurring reminders.",
     parameters: Type.Object({}),
     async execute(_id, _params, signal) {
       const out = await sqlite(
-        `SELECT id || '  ' || fire_at || '  ' || prompt FROM reminders ORDER BY fire_at;`,
+        `SELECT 'one-shot #' || id || '  ' || fire_at || '  ' || prompt ` +
+          `FROM reminders ORDER BY fire_at; ` +
+          `SELECT 'recurring #' || id || '  ' || cron || '  [' || timezone || ']  ends ' || ` +
+          `COALESCE(end_at, 'never') || '  ' || prompt FROM recurring_reminders ORDER BY id;`,
         signal,
       );
       return {
@@ -174,6 +264,36 @@ export default function remindersExtension(pi: ExtensionAPI) {
           {
             type: "text",
             text: n > 0 ? `Reminder #${params.id} cancelled.` : `No reminder with id ${params.id}.`,
+          },
+        ],
+        details: { deleted: n },
+      };
+    },
+  });
+
+  pi.registerTool({
+    name: "remind_cron_cancel",
+    label: "Cancel recurring reminder",
+    description:
+      "Delete an active recurring reminder series by id. An occurrence already " +
+      "queued for delivery may still run.",
+    parameters: Type.Object({
+      id: Type.Integer({ description: "Recurring reminder series id to cancel" }),
+    }),
+    async execute(_id, params, signal) {
+      const out = await sqlite(
+        `DELETE FROM recurring_reminders WHERE id = ${params.id}; SELECT changes();`,
+        signal,
+      );
+      const n = Number(out);
+      return {
+        content: [
+          {
+            type: "text",
+            text:
+              n > 0
+                ? `Recurring reminder #${params.id} cancelled. Any occurrence already queued may still run.`
+                : `No recurring reminder with id ${params.id}.`,
           },
         ],
         details: { deleted: n },

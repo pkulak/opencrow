@@ -2,6 +2,7 @@ package main
 
 import (
 	"context"
+	"fmt"
 	"os"
 	"path/filepath"
 	"reflect"
@@ -145,6 +146,100 @@ func TestDispatchDueReminders(t *testing.T) {
 
 	if remaining != 1 {
 		t.Errorf("reminders remaining = %d, want 1", remaining)
+	}
+}
+
+func TestDispatchRecurringReminders(t *testing.T) {
+	t.Parallel()
+
+	ctx := context.Background()
+	db := newTestDB(ctx, t)
+	inbox := newTestInboxWithDB(ctx, t, db)
+	w := &Worker{inbox: inbox, wake: make(chan struct{}, 1)}
+	now := time.Date(2026, time.June, 1, 19, 0, 30, 0, time.UTC)
+
+	if _, err := db.ExecContext(ctx, `
+		INSERT INTO recurring_reminders (cron, timezone, end_at, prompt) VALUES
+			('0 12 * * *', 'America/Los_Angeles', '2026-06-01T12:00:00-07:00', 'matching reminder'),
+			('1 12 * * *', 'America/Los_Angeles', NULL, 'future reminder'),
+			('0 12 * * *', 'America/Los_Angeles', '2026-06-01T11:59:00-07:00', 'expired reminder'),
+			('0 12 * * *', 'America/Los_Angeles', 'not-a-time', 'invalid end time'),
+			('@daily', 'America/Los_Angeles', NULL, 'invalid cron'),
+			('TZ=UTC', 'America/Los_Angeles', NULL, 'malformed timezone prefix'),
+			('TZ=UTC 0 12 * * *', 'America/Los_Angeles', NULL, 'timezone prefix'),
+			('0 12 * * *', 'Not/A_Timezone', NULL, 'invalid timezone'),
+			('0 12 * * *', '', NULL, 'empty timezone'),
+			('0 12 * * *', 'Local', NULL, 'local timezone')
+	`); err != nil {
+		t.Fatal(err)
+	}
+
+	dispatchRecurringReminders(ctx, w, now)
+
+	item, err := inbox.Dequeue(ctx)
+	if err != nil {
+		t.Fatalf("expected one inbox item, got error: %v", err)
+	}
+
+	for _, want := range []string{
+		"Series ID: 1",
+		"Cron: 0 12 * * *",
+		"Timezone: America/Los_Angeles",
+		"Scheduled for: 2026-06-01T12:00:00-07:00",
+		"matching reminder",
+	} {
+		if !strings.Contains(item.Content, want) {
+			t.Errorf("content %q does not contain %q", item.Content, want)
+		}
+	}
+
+	if n, _ := inbox.Count(ctx); n != 0 {
+		t.Errorf("inbox count = %d, want 0", n)
+	}
+
+	var remaining int
+	if err := db.QueryRowContext(ctx, `SELECT count(*) FROM recurring_reminders`).Scan(&remaining); err != nil {
+		t.Fatal(err)
+	}
+
+	if remaining != 2 {
+		t.Errorf("recurring reminders remaining = %d, want 2", remaining)
+	}
+}
+
+func TestDispatchRecurringRemindersCapsInbox(t *testing.T) {
+	t.Parallel()
+
+	ctx := context.Background()
+	db := newTestDB(ctx, t)
+	inbox := newTestInboxWithDB(ctx, t, db)
+	w := &Worker{inbox: inbox, wake: make(chan struct{}, 1)}
+	now := time.Date(2026, time.January, 5, 12, 0, 30, 0, time.UTC)
+
+	for i := 1; i <= 6; i++ {
+		if _, err := db.ExecContext(ctx,
+			`INSERT INTO recurring_reminders (cron, timezone, prompt) VALUES ('0 12 * * *', 'UTC', ?)`,
+			fmt.Sprintf("reminder %d", i),
+		); err != nil {
+			t.Fatal(err)
+		}
+	}
+
+	dispatchRecurringReminders(ctx, w, now)
+
+	if n, _ := inbox.Count(ctx); n != recurringInboxLimit {
+		t.Errorf("inbox count = %d, want %d", n, recurringInboxLimit)
+	}
+
+	for i := int64(1); i <= recurringInboxLimit; i++ {
+		item, err := inbox.Dequeue(ctx)
+		if err != nil {
+			t.Fatal(err)
+		}
+
+		if want := fmt.Sprintf("Series ID: %d", i); !strings.Contains(item.Content, want) {
+			t.Errorf("content %q does not contain %q", item.Content, want)
+		}
 	}
 }
 

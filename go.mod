@@ -3,6 +3,7 @@ module github.com/pinpox/opencrow
 go 1.25.5
 
 require (
+	github.com/robfig/cron/v3 v3.0.1
 	github.com/rs/zerolog v1.34.0
 	go.mau.fi/util v0.9.5
 	maunium.net/go/mautrix v0.26.2

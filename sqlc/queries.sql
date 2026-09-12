@@ -55,3 +55,11 @@ RETURNING id, fire_at, prompt;
 
 -- name: InsertReminder :exec
 INSERT INTO reminders (fire_at, prompt) VALUES (?, ?);
+
+-- name: ListRecurringReminders :many
+SELECT id, cron, timezone, end_at, prompt
+FROM recurring_reminders
+ORDER BY id;
+
+-- name: DeleteRecurringReminder :exec
+DELETE FROM recurring_reminders WHERE id = ?;

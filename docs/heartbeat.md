@@ -1,8 +1,8 @@
 # Heartbeat & Reminders
 
 OpenCrow has two scheduling primitives: a **heartbeat** for periodic
-awareness and a **reminders** table for one-shot prompts. Both share a
-1-minute ticker.
+awareness and **reminders** for scheduled prompts. One-shot and recurring
+reminders share a 1-minute ticker.
 
 ## Heartbeat
 
@@ -39,17 +39,38 @@ HEARTBEAT.md checklist loop.
 
 ## Reminders
 
-One-shot reminders live in the `reminders` table in the session's
-`opencrow.db`. Enable the bundled `reminders` pi extension to give the
-agent structured tools:
+Enable the bundled `reminders` pi extension to give the agent structured
+tools:
 
-- `remind_at(when, prompt)` — schedule a reminder (ISO 8601, normalized to UTC)
-- `remind_list()` — list pending reminders
-- `remind_cancel(id)` — delete one
+- `remind_at(when, prompt)` — schedule a one-shot reminder
+- `remind_cron(cron, timezone, prompt, end_at?)` — schedule a recurring reminder
+- `remind_list()` — list pending one-shot and recurring reminders
+- `remind_cancel(id)` — cancel a one-shot reminder
+- `remind_cron_cancel(id)` — cancel a recurring reminder
 
-Every minute the scheduler runs `DELETE … WHERE fire_at <= now() RETURNING …`
-and enqueues each due reminder as a trigger item. Cleanup is atomic — the
-agent never manages lifecycle.
+One-shot timestamps and optional recurring end times use ISO 8601 with an
+explicit timezone. Recurring reminders use a five-field cron expression and
+an explicit IANA timezone:
+
+```text
+cron:     0 12 * * 1
+timezone: America/Los_Angeles
+```
+
+This fires every Monday at noon Pacific time. Cron uses the usual
+`minute hour day-of-month month day-of-week` fields. When both day fields are
+restricted, either one can match.
+
+Every minute the scheduler deletes and enqueues due one-shot reminders, then
+checks recurring schedules against the current minute. Recurring reminders
+are deliberately loose scheduling: missed or failed occurrences are not
+retried, and downtime does not produce catch-up reminders. If the inbox
+already contains five items, matching recurring occurrences are skipped so
+they cannot build an unbounded backlog.
+
+Canceling or reaching the optional inclusive end time deletes a recurring
+series. An occurrence already queued when the series is canceled may still
+run.
 
 `OPENCROW_SESSION_DIR` is exported into pi's environment automatically.
 

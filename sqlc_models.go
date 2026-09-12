@@ -4,6 +4,10 @@
 
 package main
 
+import (
+	"database/sql"
+)
+
 type Inbox struct {
 	ID             int64
 	Priority       int64
@@ -14,6 +18,14 @@ type Inbox struct {
 	MessageID      string
 	IsGroup        bool
 	CreatedAt      string
+}
+
+type RecurringReminders struct {
+	ID       int64
+	Cron     string
+	Timezone string
+	EndAt    sql.NullString
+	Prompt   string
 }
 
 type Reminders struct {

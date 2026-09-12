@@ -52,6 +52,15 @@ func (q *Queries) DeleteOldestOutbox(ctx context.Context, arg DeleteOldestOutbox
 	return err
 }
 
+const deleteRecurringReminder = `-- name: DeleteRecurringReminder :exec
+DELETE FROM recurring_reminders WHERE id = ?
+`
+
+func (q *Queries) DeleteRecurringReminder(ctx context.Context, id int64) error {
+	_, err := q.db.ExecContext(ctx, deleteRecurringReminder, id)
+	return err
+}
+
 const deleteStaleItems = `-- name: DeleteStaleItems :exec
 DELETE FROM inbox WHERE source IN ('heartbeat', 'compact')
 `
@@ -189,6 +198,41 @@ type InsertReminderParams struct {
 func (q *Queries) InsertReminder(ctx context.Context, arg InsertReminderParams) error {
 	_, err := q.db.ExecContext(ctx, insertReminder, arg.FireAt, arg.Prompt)
 	return err
+}
+
+const listRecurringReminders = `-- name: ListRecurringReminders :many
+SELECT id, cron, timezone, end_at, prompt
+FROM recurring_reminders
+ORDER BY id
+`
+
+func (q *Queries) ListRecurringReminders(ctx context.Context) ([]RecurringReminders, error) {
+	rows, err := q.db.QueryContext(ctx, listRecurringReminders)
+	if err != nil {
+		return nil, err
+	}
+	defer rows.Close()
+	var items []RecurringReminders
+	for rows.Next() {
+		var i RecurringReminders
+		if err := rows.Scan(
+			&i.ID,
+			&i.Cron,
+			&i.Timezone,
+			&i.EndAt,
+			&i.Prompt,
+		); err != nil {
+			return nil, err
+		}
+		items = append(items, i)
+	}
+	if err := rows.Close(); err != nil {
+		return nil, err
+	}
+	if err := rows.Err(); err != nil {
+		return nil, err
+	}
+	return items, nil
 }
 
 const upsertOutbox = `-- name: UpsertOutbox :exec
