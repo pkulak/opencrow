@@ -364,7 +364,7 @@ func (w *Worker) processPrompt(ctx context.Context, item Inbox) bool {
 		return false
 	}
 
-	w.app.sendReplyWithFiles(ctx, convID, reply, replyToID, !w.background)
+	w.app.sendReplyWithFiles(ctx, convID, reply, replyToID, !w.background, w.background)
 
 	return false
 }

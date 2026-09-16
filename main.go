@@ -130,7 +130,7 @@ func runServices(ctx context.Context, b *matrix.Backend, worker, backgroundWorke
 // upgrade deadlocks when two writers overlap under WAL.
 const sqliteDSNParams = "?_txlock=immediate&_pragma=journal_mode(WAL)&_pragma=busy_timeout(5000)"
 
-// openDB opens the shared database for inbox and outbox tables.
+// openDB opens the shared database for inbox, outbox, and room context tables.
 func openDB(ctx context.Context, sessionDir string) (*sql.DB, error) {
 	dbPath := filepath.Join(sessionDir, opencrowDBFile)
 

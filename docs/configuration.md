@@ -71,6 +71,20 @@ chat session across rooms and DMs, while triggers and reminders use a separate
 background session. `!restart`, `!stop`, and `!compact` affect chat; use
 `!background-restart` and `!background-stop` for the background session.
 
+The sessions are separate, but the chat worker still sees relevant room activity.
+OpenCrow saves unaddressed group messages and background-worker replies per room,
+then prepends them when chat is next activated. Downloaded attachments include
+their local path, so you can post a photo and ask about it in a later mention.
+Direct replies are quoted once rather than duplicated in the recent-room block.
+
+Pending room context survives restarts and is bounded to the newest 64 messages
+and 64 KiB. The prompt says when older messages were omitted. This is a hard
+cutoff, not an AI-generated summary.
+
+Only allowed senders contribute room context. If `OPENCROW_ALLOWED_USERS` is
+unset, everyone is allowed; set it when other room members should not be able to
+influence the agent's context or send it attachments.
+
 ## Pi configuration
 
 `OPENCROW_BACKGROUND_PI_PROVIDER` and `OPENCROW_BACKGROUND_PI_MODEL` optionally

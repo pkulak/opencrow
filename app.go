@@ -21,33 +21,10 @@ var (
 	reactRe    = regexp.MustCompile(`(?m)(?:^[\t ]*|[\t ]+)<react[\t ]+id="([^"\r\n]+)">([^\r\n]*)</react>[\t ]*$`)
 )
 
-const (
-	maxReactionBytes   = 64
-	recentChatMaxCount = 64
-)
-
-type recentMessage struct {
-	sender string
-	text   string
-}
+const maxReactionBytes = 64
 
 type conversationFilterState struct {
 	lastSenderIsAgent bool
-	bufferedChat      []recentMessage
-}
-
-func (s *conversationFilterState) appendBufferedChat(msg recentMessage) {
-	s.bufferedChat = append(s.bufferedChat, msg)
-	if len(s.bufferedChat) > recentChatMaxCount {
-		s.bufferedChat = s.bufferedChat[len(s.bufferedChat)-recentChatMaxCount:]
-	}
-}
-
-func (s *conversationFilterState) drainBufferedChat() []recentMessage {
-	buffered := s.bufferedChat
-	s.bufferedChat = nil
-
-	return buffered
 }
 
 type reactionRequest struct {
@@ -60,6 +37,7 @@ type appMatrix interface {
 	SendFile(ctx context.Context, conversationID, filePath string) error
 	SendReaction(ctx context.Context, conversationID, messageID, emoji string) error
 	ResetConversation(ctx context.Context, conversationID string)
+	OwnIdentity(ctx context.Context, conversationID string) (name, userID string)
 	SystemPromptExtra() string
 }
 
@@ -138,6 +116,7 @@ type App struct {
 	backgroundWorker  *Worker
 	inbox             *InboxStore
 	outbox            *outboxStore
+	roomContext       *roomContextStore
 	groupTriggerRegex *regexp.Regexp
 
 	mu           sync.Mutex
@@ -152,6 +131,7 @@ func NewApp(matrixClient appMatrix, worker *Worker, inbox *InboxStore, db *sql.D
 		worker:       worker,
 		inbox:        inbox,
 		outbox:       newOutboxStore(db),
+		roomContext:  newRoomContextStore(db),
 		filterStates: make(map[string]*conversationFilterState),
 	}
 }
@@ -269,21 +249,25 @@ func (a *App) handleSkills(ctx context.Context, msg matrix.Message) {
 }
 
 func (a *App) handlePrompt(ctx context.Context, msg matrix.Message) {
-	var buffered []recentMessage
+	if !msg.IsDM && !a.checkGroupMessage(msg) {
+		slog.Debug("app: ignoring unaddressed group message",
+			"conversation", msg.ConversationID,
+			"sender", msg.SenderName,
+			"text", msg.Text,
+		)
 
-	if !msg.IsDM {
-		shouldProcess, b := a.checkGroupMessage(msg)
-		if !shouldProcess {
-			slog.Debug("app: ignoring unaddressed group message",
-				"conversation", msg.ConversationID,
-				"sender", msg.SenderName,
-				"text", msg.Text,
-			)
-
-			return
+		if err := a.roomContext.Append(ctx, roomContextEvent{
+			ConversationID: msg.ConversationID,
+			MessageID:      msg.MessageID,
+			Speaker:        "participant",
+			SenderName:     msg.SenderName,
+			SenderID:       msg.SenderID,
+			Text:           msg.Text,
+		}); err != nil {
+			slog.Error("failed to record room context", "error", err)
 		}
 
-		buffered = b
+		return
 	}
 
 	a.worker.SetRoomID(msg.ConversationID)
@@ -293,9 +277,22 @@ func (a *App) handlePrompt(ctx context.Context, msg matrix.Message) {
 		a.backgroundWorker.Notify()
 	}
 
-	promptText := a.buildPromptText(ctx, msg, buffered)
+	quoted := ""
+	if msg.ReplyToID != "" {
+		quoted = a.outbox.Get(ctx, msg.ConversationID, msg.ReplyToID)
+	}
 
-	if err := a.inbox.EnqueueUser(ctx, promptText, msg.ReplyToID, msg.ConversationID, msg.MessageID, !msg.IsDM); err != nil {
+	params := EnqueueInboxParams{
+		Priority:       PriorityUser,
+		Source:         sourceUser,
+		ReplyTo:        msg.ReplyToID,
+		ConversationID: msg.ConversationID,
+		MessageID:      msg.MessageID,
+		IsGroup:        !msg.IsDM,
+	}
+	if err := a.roomContext.EnqueueUser(ctx, params, msg.ReplyToID, func(recentBlock string) string {
+		return a.buildPromptText(msg, quoted, recentBlock)
+	}); err != nil {
 		slog.Error("failed to enqueue user message", "error", err)
 		a.matrix.SendMessage(ctx, msg.ConversationID, fmt.Sprintf("Error: %v", err), "")
 
@@ -305,12 +302,12 @@ func (a *App) handlePrompt(ctx context.Context, msg matrix.Message) {
 	a.worker.Notify()
 }
 
-// buildPromptText prepends context tags, buffered recent messages, and reply-quote context to the message text.
-func (a *App) buildPromptText(ctx context.Context, msg matrix.Message, buffered []recentMessage) string {
+// buildPromptText prepends room metadata, recent context, and reply-quote context.
+func (a *App) buildPromptText(msg matrix.Message, quoted, recentBlock string) string {
 	promptText := msg.Text
 
 	if msg.ReplyToID != "" {
-		if quoted := a.outbox.Get(ctx, msg.ConversationID, msg.ReplyToID); quoted != "" {
+		if quoted != "" {
 			promptText = fmt.Sprintf("[user replied to message: %q]\n%s", quoted, promptText)
 		} else {
 			promptText = "[user replied to a message whose content is unavailable — ask for clarification if their message is unclear]\n" + promptText
@@ -327,7 +324,6 @@ func (a *App) buildPromptText(ctx context.Context, msg matrix.Message, buffered 
 		}
 	}
 
-	recentBlock := formatRecentChat(buffered)
 	if recentBlock != "" {
 		if tags == "" {
 			tags = recentBlock
@@ -341,24 +337,6 @@ func (a *App) buildPromptText(ctx context.Context, msg matrix.Message, buffered 
 	}
 
 	return promptText
-}
-
-// formatRecentChat formats buffered unaddressed messages into an XML block.
-func formatRecentChat(messages []recentMessage) string {
-	if len(messages) == 0 {
-		return ""
-	}
-
-	lines := make([]string, 0, len(messages)+2)
-	lines = append(lines, "<recent-room-messages>")
-
-	for _, m := range messages {
-		lines = append(lines, fmt.Sprintf("%s: %s", escape(m.sender), escape(m.text)))
-	}
-
-	lines = append(lines, "</recent-room-messages>")
-
-	return strings.Join(lines, "\n")
 }
 
 func (a *App) getOrCreateFilterState(conversationID string) *conversationFilterState {
@@ -379,41 +357,19 @@ func (a *App) recordAgentActivity(conversationID string) {
 	st.lastSenderIsAgent = true
 }
 
-func (a *App) checkGroupMessage(msg matrix.Message) (bool, []recentMessage) {
+func (a *App) checkGroupMessage(msg matrix.Message) bool {
 	a.mu.Lock()
 	defer a.mu.Unlock()
 
 	if a.groupTriggerRegex == nil {
-		return true, nil
+		return true
 	}
 
 	st := a.getOrCreateFilterState(msg.ConversationID)
-
-	matchesRegex := a.groupTriggerRegex.MatchString(msg.Text)
-	isNextMessage := st.lastSenderIsAgent
-
-	if matchesRegex || isNextMessage {
-		st.lastSenderIsAgent = false
-		buffered := st.drainBufferedChat()
-
-		return true, buffered
-	}
-
+	shouldProcess := a.groupTriggerRegex.MatchString(msg.Text) || st.lastSenderIsAgent
 	st.lastSenderIsAgent = false
 
-	if trimmed := strings.TrimSpace(msg.Text); trimmed != "" {
-		sender := msg.SenderName
-		if sender == "" {
-			sender = msg.SenderID
-		}
-
-		st.appendBufferedChat(recentMessage{
-			sender: sender,
-			text:   trimmed,
-		})
-	}
-
-	return false, nil
+	return shouldProcess
 }
 
 // buildContextTags returns a block of XML-style context tags derived from the
@@ -477,13 +433,44 @@ func (a *App) sendReaction(ctx context.Context, conversationID string, reaction 
 // sendReplyWithFiles extracts <sendfile> tags, uploads each file, and sends
 // the final text reply. reportFileErrors controls whether upload failures are
 // included in that reply; background infrastructure failures remain log-only.
-func (a *App) sendReplyWithFiles(ctx context.Context, conversationID, reply, replyToID string, reportFileErrors bool) {
+func (a *App) sendReplyWithFiles(
+	ctx context.Context,
+	conversationID, reply, replyToID string,
+	reportFileErrors, background bool,
+) {
 	slog.Info("sending reply", "conversation", conversationID, "len", len(reply))
 	slog.Debug("outgoing reply content", "conversation", conversationID, "content", reply)
 
 	cleanReply, filePaths := extractSendFiles(reply)
+	sentFiles, fileErrors := a.sendFiles(ctx, conversationID, filePaths, reportFileErrors)
+	cleanReply += fileErrors
 
-	var fileSendErrors strings.Builder
+	var sentID string
+
+	if cleanReply != "" {
+		sentID = a.matrix.SendMessage(ctx, conversationID, cleanReply, replyToID)
+		a.outbox.Put(ctx, conversationID, sentID, cleanReply)
+	}
+
+	if background {
+		a.recordBackgroundReply(ctx, conversationID, sentID, cleanReply, sentFiles)
+	}
+
+	if sentID != "" || len(sentFiles) > 0 {
+		a.recordAgentActivity(conversationID)
+	}
+}
+
+func (a *App) sendFiles(
+	ctx context.Context,
+	conversationID string,
+	filePaths []string,
+	reportErrors bool,
+) ([]string, string) {
+	var (
+		fileSendErrors strings.Builder
+		sentFiles      []string
+	)
 
 	for _, fp := range filePaths {
 		slog.Info("sending file", "conversation", conversationID, "path", fp)
@@ -491,18 +478,49 @@ func (a *App) sendReplyWithFiles(ctx context.Context, conversationID, reply, rep
 		if err := a.matrix.SendFile(ctx, conversationID, fp); err != nil {
 			slog.Error("failed to send file", "conversation", conversationID, "path", fp, "error", err)
 
-			if reportFileErrors {
+			if reportErrors {
 				fmt.Fprintf(&fileSendErrors, "\n\n(failed to send file %s: %v)", filepath.Base(fp), err)
 			}
+
+			continue
 		}
+
+		sentFiles = append(sentFiles, fp)
 	}
 
-	cleanReply += fileSendErrors.String()
+	return sentFiles, fileSendErrors.String()
+}
 
-	if cleanReply != "" {
-		sentID := a.matrix.SendMessage(ctx, conversationID, cleanReply, replyToID)
-		a.outbox.Put(ctx, conversationID, sentID, cleanReply)
-		a.recordAgentActivity(conversationID)
+func (a *App) recordBackgroundReply(
+	ctx context.Context,
+	conversationID, messageID, text string,
+	filePaths []string,
+) {
+	if messageID == "" && len(filePaths) == 0 {
+		return
+	}
+
+	name, userID := a.matrix.OwnIdentity(ctx, conversationID)
+	parts := make([]string, 0, len(filePaths)+1)
+
+	if messageID != "" {
+		parts = append(parts, text)
+	}
+
+	for _, fp := range filePaths {
+		parts = append(parts, "[You sent a file: "+fp+"]")
+	}
+
+	if err := a.roomContext.Append(ctx, roomContextEvent{
+		ConversationID: conversationID,
+		MessageID:      messageID,
+		Speaker:        "you",
+		Worker:         "background",
+		SenderName:     name,
+		SenderID:       userID,
+		Text:           strings.Join(parts, "\n"),
+	}); err != nil {
+		slog.Error("failed to record background room context", "error", err)
 	}
 }
 

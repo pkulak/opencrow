@@ -66,7 +66,7 @@ func (m *mockMatrix) SendMessage(_ context.Context, conversationID string, text 
 
 	m.sentMessages = append(m.sentMessages, sentMessage{conversationID, text})
 
-	return ""
+	return "$sent-" + strconv.Itoa(len(m.sentMessages))
 }
 
 func (m *mockMatrix) SendFile(_ context.Context, conversationID string, filePath string) error {
@@ -90,6 +90,10 @@ func (m *mockMatrix) ResetConversation(_ context.Context, conversationID string)
 	defer m.mu.Unlock()
 
 	m.resetCalls = append(m.resetCalls, conversationID)
+}
+
+func (m *mockMatrix) OwnIdentity(context.Context, string) (string, string) {
+	return "Barnaby", "@barnaby:example.com"
 }
 
 func (m *mockMatrix) SystemPromptExtra() string {
@@ -235,7 +239,7 @@ func TestSendReplyWithFilesReportsFailuresOnlyForChat(t *testing.T) {
 
 			matrixClient := &mockMatrix{sendFileErr: errors.New("upload failed")}
 			app := newTestAppWithMatrix(t, matrixClient)
-			app.sendReplyWithFiles(t.Context(), testRoom, "Report\n<sendfile>/tmp/report.txt</sendfile>", "", tc.reportErrors)
+			app.sendReplyWithFiles(t.Context(), testRoom, "Report\n<sendfile>/tmp/report.txt</sendfile>", "", tc.reportErrors, false)
 
 			matrixClient.mu.Lock()
 			defer matrixClient.mu.Unlock()
@@ -407,7 +411,7 @@ func TestApp_BuildPromptText_ReplyToUserMessage(t *testing.T) {
 		ReplyToID:      "user-msg-123",
 	}
 
-	got := app.buildPromptText(ctx, replyMsg, nil)
+	got := app.buildPromptText(replyMsg, "original question", "")
 
 	// Should contain the reply-quote context and original text.
 	if !strings.Contains(got, `[user replied to message: "original question"]`) {
@@ -560,7 +564,6 @@ func TestBuildPromptText_ContextTags(t *testing.T) {
 	t.Parallel()
 
 	app, _ := newTestApp(t)
-	ctx := context.Background()
 
 	msg := matrix.Message{
 		ConversationID: "!room:matrix.org",
@@ -569,7 +572,7 @@ func TestBuildPromptText_ContextTags(t *testing.T) {
 		IsDM:           false,
 	}
 
-	got := app.buildPromptText(ctx, msg, nil)
+	got := app.buildPromptText(msg, "", "")
 
 	// Should contain context tags followed by a blank line then the text.
 	if !strings.Contains(got, "<from-id>@alice:matrix.org</from-id>") {
@@ -598,7 +601,7 @@ func TestBuildPromptText_IncludesMessageID(t *testing.T) {
 
 	app, _ := newTestApp(t)
 
-	got := app.buildPromptText(context.Background(), msg, nil)
+	got := app.buildPromptText(msg, "", "")
 	if !strings.Contains(got, "<message-id>$event&lt;&amp;&gt;</message-id>") {
 		t.Errorf("prompt missing escaped message-id, got: %q", got)
 	}
@@ -730,29 +733,6 @@ func TestFormatToolCall(t *testing.T) {
 
 var groupTriggerTestRe = regexp.MustCompile(`(?i)\b(barnaby|barn)\b`)
 
-func TestConversationFilterState_BuffersLast64MessagesUntilDrained(t *testing.T) {
-	t.Parallel()
-
-	var state conversationFilterState
-
-	for i := range 65 {
-		state.appendBufferedChat(recentMessage{text: strconv.Itoa(i)})
-	}
-
-	buffered := state.drainBufferedChat()
-	if len(buffered) != 64 {
-		t.Fatalf("drained %d messages, want 64", len(buffered))
-	}
-
-	if buffered[0].text != "1" || buffered[len(buffered)-1].text != "64" {
-		t.Errorf("drained messages range from %q to %q, want 1 to 64", buffered[0].text, buffered[len(buffered)-1].text)
-	}
-
-	if state.bufferedChat != nil {
-		t.Errorf("bufferedChat = %+v, want nil after drain", state.bufferedChat)
-	}
-}
-
 func TestApp_GroupFilter_UnaddressedChatBufferedAndDropped(t *testing.T) {
 	t.Parallel()
 
@@ -779,17 +759,18 @@ func TestApp_GroupFilter_UnaddressedChatBufferedAndDropped(t *testing.T) {
 		t.Errorf("inbox count = %d, want 0", count)
 	}
 
-	app.mu.Lock()
-	st := app.filterStates["!family:kulak.us"]
-
-	if st == nil || len(st.bufferedChat) != 1 {
-		t.Fatalf("buffered chat length = %v, want 1", st)
+	events, err := loadRoomContextEvents(ctx, app.roomContext.db, "!family:kulak.us")
+	if err != nil {
+		t.Fatal(err)
 	}
 
-	if st.bufferedChat[0].sender != "Gwen" || st.bufferedChat[0].text != "Did you know dogs can't look up?" {
-		t.Errorf("buffered message = %+v", st.bufferedChat[0])
+	if len(events) != 1 {
+		t.Fatalf("room context length = %d, want 1", len(events))
 	}
-	app.mu.Unlock()
+
+	if events[0].SenderName != "Gwen" || events[0].Text != "Did you know dogs can't look up?" {
+		t.Errorf("buffered message = %+v", events[0])
+	}
 }
 
 func TestApp_GroupFilter_TriggerPrependsBufferAndClearsIt(t *testing.T) {
@@ -836,7 +817,8 @@ func TestApp_GroupFilter_TriggerPrependsBufferAndClearsIt(t *testing.T) {
 		t.Errorf("item.Content missing <recent-room-messages>, got: %q", item.Content)
 	}
 
-	if !strings.Contains(item.Content, "Gwen: Dogs can&#39;t look up.") {
+	if !strings.Contains(item.Content, `speaker="participant" sender-name="Gwen" sender-id="@gwen:kulak.us"`) ||
+		!strings.Contains(item.Content, "Dogs can&#39;t look up.") {
 		t.Errorf("item.Content missing Gwen's buffered message, got: %q", item.Content)
 	}
 
@@ -844,14 +826,15 @@ func TestApp_GroupFilter_TriggerPrependsBufferAndClearsIt(t *testing.T) {
 		t.Errorf("item.Content missing prompt text, got: %q", item.Content)
 	}
 
-	// Buffer should now be cleared
-	app.mu.Lock()
-	st := app.filterStates["!family:kulak.us"]
-
-	if len(st.bufferedChat) != 0 {
-		t.Errorf("bufferedChat = %d, want 0 after flush", len(st.bufferedChat))
+	// Persistent room context should now be consumed.
+	events, err := loadRoomContextEvents(ctx, app.roomContext.db, "!family:kulak.us")
+	if err != nil {
+		t.Fatal(err)
 	}
-	app.mu.Unlock()
+
+	if len(events) != 0 {
+		t.Errorf("room context length = %d, want 0 after flush", len(events))
+	}
 }
 
 func TestApp_GroupFilter_NextMessageAllowed(t *testing.T) {
@@ -862,16 +845,13 @@ func TestApp_GroupFilter_NextMessageAllowed(t *testing.T) {
 
 	ctx := t.Context()
 
-	// Simulate bot speaking in room
 	app.recordAgentActivity("!family:kulak.us")
 
-	// Immediate next message from user arrives (no regex match)
 	app.HandleMessage(ctx, matrix.Message{
 		ConversationID: "!family:kulak.us",
 		SenderID:       "@phil:kulak.us",
 		SenderName:     "Phil",
 		Text:           "Thanks!",
-		IsDM:           false,
 	})
 
 	count, err := app.inbox.Count(ctx)
@@ -883,13 +863,11 @@ func TestApp_GroupFilter_NextMessageAllowed(t *testing.T) {
 		t.Fatalf("inbox count = %d, want 1 for next message", count)
 	}
 
-	// Second message arrives (still no regex match, and no longer immediate next message)
 	app.HandleMessage(ctx, matrix.Message{
 		ConversationID: "!family:kulak.us",
 		SenderID:       "@gwen:kulak.us",
 		SenderName:     "Gwen",
 		Text:           "Who is cooking tonight?",
-		IsDM:           false,
 	})
 
 	count2, err := app.inbox.Count(ctx)
@@ -901,16 +879,13 @@ func TestApp_GroupFilter_NextMessageAllowed(t *testing.T) {
 		t.Errorf("inbox count = %d, want still 1 (second message dropped)", count2)
 	}
 
-	// Bot speaks again
 	app.recordAgentActivity("!family:kulak.us")
 
-	// Next message arrives without regex match and is allowed
 	app.HandleMessage(ctx, matrix.Message{
 		ConversationID: "!family:kulak.us",
 		SenderID:       "@gwen:kulak.us",
 		SenderName:     "Gwen",
 		Text:           "Sounds good!",
-		IsDM:           false,
 	})
 
 	count3, err := app.inbox.Count(ctx)

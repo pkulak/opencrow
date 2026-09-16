@@ -34,6 +34,23 @@ type Reminders struct {
 	Prompt string
 }
 
+type RoomContext struct {
+	ID             int64
+	ConversationID string
+	MessageID      string
+	Speaker        string
+	Worker         string
+	SenderName     string
+	SenderID       string
+	Text           string
+	CreatedAt      string
+}
+
+type RoomContextOmissions struct {
+	ConversationID string
+	DroppedCount   int64
+}
+
 type SentMessages struct {
 	ConversationID string
 	MessageID      string
