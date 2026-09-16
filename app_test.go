@@ -8,7 +8,6 @@ import (
 	"strings"
 	"sync"
 	"testing"
-	"time"
 
 	"github.com/pinpox/opencrow/matrix"
 )
@@ -855,7 +854,7 @@ func TestApp_GroupFilter_TriggerPrependsBufferAndClearsIt(t *testing.T) {
 	app.mu.Unlock()
 }
 
-func TestApp_GroupFilter_FollowUpWithinWindow(t *testing.T) {
+func TestApp_GroupFilter_NextMessageAllowed(t *testing.T) {
 	t.Parallel()
 
 	app, _ := newTestApp(t)
@@ -865,40 +864,6 @@ func TestApp_GroupFilter_FollowUpWithinWindow(t *testing.T) {
 
 	// Simulate bot speaking in room
 	app.recordAgentActivity("!family:kulak.us")
-
-	// User follows up 1 minute later without mentioning Barn
-	app.HandleMessage(ctx, matrix.Message{
-		ConversationID: "!family:kulak.us",
-		SenderID:       "@phil:kulak.us",
-		SenderName:     "Phil",
-		Text:           "What about cats?",
-		IsDM:           false,
-	})
-
-	count, err := app.inbox.Count(ctx)
-	if err != nil {
-		t.Fatal(err)
-	}
-
-	if count != 1 {
-		t.Fatalf("inbox count = %d, want 1", count)
-	}
-}
-
-func TestApp_GroupFilter_NextMessageAllowed(t *testing.T) {
-	t.Parallel()
-
-	app, _ := newTestApp(t)
-	app.SetGroupTriggerRegex(groupTriggerTestRe)
-
-	ctx := t.Context()
-
-	// Bot spoke 10 minutes ago, but nobody has spoken since
-	app.mu.Lock()
-	st := app.getOrCreateFilterState("!family:kulak.us")
-	st.lastAgentMessageAt = time.Now().Add(-10 * time.Minute)
-	st.lastSenderIsAgent = true
-	app.mu.Unlock()
 
 	// Immediate next message from user arrives (no regex match)
 	app.HandleMessage(ctx, matrix.Message{
@@ -934,6 +899,27 @@ func TestApp_GroupFilter_NextMessageAllowed(t *testing.T) {
 
 	if count2 != 1 {
 		t.Errorf("inbox count = %d, want still 1 (second message dropped)", count2)
+	}
+
+	// Bot speaks again
+	app.recordAgentActivity("!family:kulak.us")
+
+	// Next message arrives without regex match and is allowed
+	app.HandleMessage(ctx, matrix.Message{
+		ConversationID: "!family:kulak.us",
+		SenderID:       "@gwen:kulak.us",
+		SenderName:     "Gwen",
+		Text:           "Sounds good!",
+		IsDM:           false,
+	})
+
+	count3, err := app.inbox.Count(ctx)
+	if err != nil {
+		t.Fatal(err)
+	}
+
+	if count3 != 2 {
+		t.Errorf("inbox count = %d, want 2 after agent speaks again", count3)
 	}
 }
 

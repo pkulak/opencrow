@@ -11,7 +11,6 @@ import (
 	"strconv"
 	"strings"
 	"sync"
-	"time"
 
 	"github.com/pinpox/opencrow/matrix"
 )
@@ -23,9 +22,8 @@ var (
 )
 
 const (
-	maxReactionBytes    = 64
-	recentChatMaxCount  = 64
-	groupFollowUpWindow = 5 * time.Minute
+	maxReactionBytes   = 64
+	recentChatMaxCount = 64
 )
 
 type recentMessage struct {
@@ -34,9 +32,8 @@ type recentMessage struct {
 }
 
 type conversationFilterState struct {
-	lastAgentMessageAt time.Time
-	lastSenderIsAgent  bool
-	bufferedChat       []recentMessage
+	lastSenderIsAgent bool
+	bufferedChat      []recentMessage
 }
 
 func (s *conversationFilterState) appendBufferedChat(msg recentMessage) {
@@ -379,7 +376,6 @@ func (a *App) recordAgentActivity(conversationID string) {
 	defer a.mu.Unlock()
 
 	st := a.getOrCreateFilterState(conversationID)
-	st.lastAgentMessageAt = time.Now()
 	st.lastSenderIsAgent = true
 }
 
@@ -394,10 +390,9 @@ func (a *App) checkGroupMessage(msg matrix.Message) (bool, []recentMessage) {
 	st := a.getOrCreateFilterState(msg.ConversationID)
 
 	matchesRegex := a.groupTriggerRegex.MatchString(msg.Text)
-	withinWindow := !st.lastAgentMessageAt.IsZero() && time.Since(st.lastAgentMessageAt) < groupFollowUpWindow
 	isNextMessage := st.lastSenderIsAgent
 
-	if matchesRegex || withinWindow || isNextMessage {
+	if matchesRegex || isNextMessage {
 		st.lastSenderIsAgent = false
 		buffered := st.drainBufferedChat()
 
