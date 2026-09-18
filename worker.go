@@ -347,7 +347,7 @@ func (w *Worker) processPrompt(ctx context.Context, item Inbox) bool {
 
 	reply = w.prepareReply(ctx, pi, item, convID, reply, onToolCall)
 
-	if shouldSuppressReply(reply, item.Source) {
+	if shouldSuppressReply(reply, item.Source, w.background) {
 		return false
 	}
 
@@ -477,18 +477,33 @@ func (w *Worker) buildPrompt(item Inbox) (string, bool) {
 }
 
 // shouldSuppressReply returns true if the reply should not be forwarded.
-func shouldSuppressReply(reply, source string) bool {
-	firstLine, _, _ := strings.Cut(strings.TrimSpace(reply), "\n")
-	if strings.TrimSpace(firstLine) == "NO_REPLY" {
+//
+// NO_REPLY is a control token meaning "stay silent this turn". Chat replies
+// must be exactly the token: a chat turn may legitimately quote NO_REPLY in
+// text or code, so only an exact match counts. Background (trigger) replies
+// may carry surrounding output — models habitually prepend a status line — so
+// the token counts on either the first or last line.
+func shouldSuppressReply(reply, source string, background bool) bool {
+	if reply == "" {
+		slog.Info(source + ": empty response, suppressing")
+
+		return true
+	}
+
+	trimmed := strings.TrimSpace(reply)
+	if trimmed == "NO_REPLY" {
 		slog.Info(source + ": NO_REPLY, suppressing")
 
 		return true
 	}
 
-	if reply == "" {
-		slog.Info(source + ": empty response, suppressing")
+	if background {
+		lines := strings.Split(trimmed, "\n")
+		if strings.TrimSpace(lines[0]) == "NO_REPLY" || strings.TrimSpace(lines[len(lines)-1]) == "NO_REPLY" {
+			slog.Info(source + ": NO_REPLY (background), suppressing")
 
-		return true
+			return true
+		}
 	}
 
 	return false

@@ -436,22 +436,28 @@ func TestShouldSuppressReply(t *testing.T) {
 	t.Parallel()
 
 	for _, tc := range []struct {
-		name  string
-		reply string
-		want  bool
+		name     string
+		reply    string
+		chatWant bool
+		bgWant   bool
 	}{
-		{"no reply", "NO_REPLY", true},
-		{"no reply with trailing output", "NO_REPLY\ninternal notes", true},
-		{"no reply later", "result\nNO_REPLY", false},
-		{"no reply with other text", "NO_REPLY is documented", false},
-		{"empty", "", true},
-		{"normal", "done", false},
+		{"no reply", "NO_REPLY", true, true},
+		{"no reply with trailing output", "NO_REPLY\ninternal notes", false, true},
+		{"no reply later", "result\nNO_REPLY", false, true},
+		{"summary then no reply", "All 12 resolved, 0 pending.\n\nNO_REPLY", false, true},
+		{"no reply with other text", "NO_REPLY is documented", false, false},
+		{"empty", "", true, true},
+		{"normal", "done", false, false},
 	} {
 		t.Run(tc.name, func(t *testing.T) {
 			t.Parallel()
 
-			if got := shouldSuppressReply(tc.reply, sourceTrigger); got != tc.want {
-				t.Errorf("shouldSuppressReply(%q) = %v, want %v", tc.reply, got, tc.want)
+			if got := shouldSuppressReply(tc.reply, sourceUser, false); got != tc.chatWant {
+				t.Errorf("shouldSuppressReply(%q, chat) = %v, want %v", tc.reply, got, tc.chatWant)
+			}
+
+			if got := shouldSuppressReply(tc.reply, sourceTrigger, true); got != tc.bgWant {
+				t.Errorf("shouldSuppressReply(%q, background) = %v, want %v", tc.reply, got, tc.bgWant)
 			}
 		})
 	}
