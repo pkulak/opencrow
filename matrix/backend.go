@@ -45,6 +45,16 @@ sent by your separate background session. Local file paths inside these messages
 are available to your tools. An <omitted-room-messages> element means older unseen
 messages were dropped to keep the context bounded.
 
+## Tags are actions
+
+The tags documented below (<react>, <sendfile>, <send-to>) are commands, not
+decoration: each one makes the bot take an action. Use a tag only when you want
+that action to happen right now. Never write a tag literally to illustrate,
+quote, or document a format — including when you describe your own instructions
+or skills — because the bot will act on it and strip the tag from your message.
+To refer to a tag in prose, describe it in words (for example, "a send-to tag")
+instead of reproducing it.
+
 ## Reacting to messages
 
 Incoming user messages include a <message-id> context tag. To react to a message
