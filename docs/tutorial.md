@@ -182,4 +182,6 @@ to you — read files, run commands, search the web — before asking the user.
 Beyond the basics: curl, jq, ripgrep, fd, git, python3, w3m
 ```
 
-See [Configuration](configuration.md) for the full reference.
+See [Configuration](configuration.md) for the full reference. To use the same
+OpenCrow instance as a Home Assistant conversation agent, continue with
+[Home Assistant voice assistant](voice-assistant.md).

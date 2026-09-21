@@ -12,6 +12,11 @@ Send these as plain text messages in any conversation with the bot:
 | `!compact` | Compact conversation context to reduce token usage |
 | `!skills` | List the skills loaded for this bot instance |
 | `!verify` | Set up cross-signing so the bot's device shows as verified |
+| `!background-stop` | Abort the active background task |
+| `!background-restart` | Start a fresh background session on the next task |
+| `!voice-stop` | Abort the active HTTP voice turn |
+| `!voice-restart` | Clear pending voice turns and start a fresh voice session on the next request |
+| `!voice-compact` | Compact the active voice session |
 
 ## General configuration
 
@@ -29,6 +34,21 @@ Send these as plain text messages in any conversation with the bot:
 | `OPENCROW_PI_SKILLS_DIR` | _(empty)_ | Directory containing skill subdirectories |
 | `OPENCROW_SHOW_TOOL_CALLS` | `false` | Show tool invocations (bash, read, edit, …) as messages in the chat |
 | `OPENCROW_DEBUG_TIMING` | `false` | Append task duration to each reply (useful for profiling local models) |
+
+## HTTP voice configuration
+
+The HTTP text-turn API is disabled unless `OPENCROW_HTTP_LISTEN` is set. Enabling
+it creates a dedicated voice worker and Pi session.
+
+| Variable | Default | Description |
+|---|---|---|
+| `OPENCROW_HTTP_LISTEN` | _(empty)_ | TCP listen address, such as `0.0.0.0:8787`. An empty value disables the HTTP server. |
+| `OPENCROW_HTTP_BEARER_TOKEN` | _(empty)_ | Static bearer token required by `/v1/status` and `/v1/turn`. Required when `OPENCROW_HTTP_LISTEN` is set. |
+
+The endpoint has the same tools and skills as the chat worker. Keep it on a
+trusted network and treat the bearer token as full access to the OpenCrow
+instance. See [Home Assistant voice assistant](voice-assistant.md) for the API,
+queue behavior, Home Assistant component, and security details.
 
 ## File handling
 
@@ -91,6 +111,11 @@ influence the agent's context or send it attachments.
 override the provider and model used for reminders and external triggers. Each
 falls back to the corresponding `OPENCROW_PI_*` setting. Background work keeps
 its own Pi session but shares the normal working directory, tools, and skills.
+
+When the HTTP listener is enabled, voice turns use another Pi session under
+`<OPENCROW_PI_SESSION_DIR>/voice`. The voice worker inherits the chat provider,
+model, soul, working directory, tools, and skills. Its context remains separate
+from both chat and background work.
 
 ## Secrets and authentication
 
