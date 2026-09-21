@@ -273,7 +273,7 @@ func TestApp_Commands(t *testing.T) {
 		{"compact no session", "!compact", []string{"No active session"}, false},
 		{"compact trailing whitespace", "!compact ", []string{"No active session"}, false},
 		{"help trailing newline", "!help\n", []string{"!help", "!restart"}, false},
-		{"help", "!help", []string{"!help", "!restart", "!stop", "!compact", "!skills", "!background-stop", "!background-restart"}, false},
+		{"help", "!help", []string{"!help", "!restart", "!stop", "!compact", "!skills", "!background-stop", "!background-restart", "!voice-stop", "!voice-restart", "!voice-compact"}, false},
 		{"restart", "!restart", []string{"Session restarted"}, true},
 		{"skills", "!skills", []string{"No skills loaded"}, false},
 	}
@@ -340,6 +340,102 @@ func TestApp_BackgroundCommands(t *testing.T) {
 
 	if len(matrixClient.resetCalls) != 0 {
 		t.Errorf("background commands reset Matrix state: %v", matrixClient.resetCalls)
+	}
+}
+
+func TestApp_VoiceCommands(t *testing.T) {
+	t.Parallel()
+
+	app, matrixClient := newTestApp(t)
+	voiceWorker := NewVoiceWorker(app.inbox, PiConfig{})
+	voiceService := NewVoiceService(HTTPConfig{BearerToken: "secret"}, app.inbox, voiceWorker)
+	voiceWorker.SetVoiceService(voiceService)
+	app.SetVoice(voiceWorker, voiceService)
+
+	sendCommand(app, "!voice-stop")
+	sendCommand(app, "!voice-restart")
+	sendCommand(app, "!voice-compact")
+
+	matrixClient.mu.Lock()
+	defer matrixClient.mu.Unlock()
+
+	if len(matrixClient.sentMessages) != 3 {
+		t.Fatalf("sent messages = %d, want 3", len(matrixClient.sentMessages))
+	}
+
+	for i, want := range []string{"No active voice turn", "Voice session restarted", "No active voice session"} {
+		if !strings.Contains(matrixClient.sentMessages[i].text, want) {
+			t.Errorf("reply %d = %q, want %q", i, matrixClient.sentMessages[i].text, want)
+		}
+	}
+}
+
+func TestDeliverVoiceReplyPlainText(t *testing.T) {
+	t.Parallel()
+
+	app, _ := newTestApp(t)
+
+	result := app.deliverVoiceReply(t.Context(), testRoom, "Hello there")
+	if result.Text != "Hello there" || result.Delivery != deliveryVoice {
+		t.Fatalf("result = %+v", result)
+	}
+}
+
+func TestDeliverVoiceReplyFile(t *testing.T) {
+	t.Parallel()
+
+	app, matrixClient := newTestApp(t)
+
+	result := app.deliverVoiceReply(t.Context(), testRoom, "I sent your file to chat.\n<sendfile>/tmp/report.txt</sendfile>")
+	if result.Text != "I sent your file to chat." || result.Delivery != deliveryVoice {
+		t.Fatalf("result = %+v", result)
+	}
+
+	matrixClient.mu.Lock()
+	defer matrixClient.mu.Unlock()
+
+	last := matrixClient.sentFiles[len(matrixClient.sentFiles)-1]
+	if last.conversationID != testRoom || last.filePath != "/tmp/report.txt" {
+		t.Errorf("sent file = %+v", last)
+	}
+}
+
+func TestDeliverVoiceReplyFileFailure(t *testing.T) {
+	t.Parallel()
+
+	matrixClient := &mockMatrix{sendFileErr: errors.New("upload failed")}
+	app := newTestAppWithMatrix(t, matrixClient)
+
+	result := app.deliverVoiceReply(t.Context(), testRoom, "I sent it.\n<sendfile>/tmp/report.txt</sendfile>")
+	if result.Text != "I couldn't send the file to chat." || result.Delivery != deliveryVoice {
+		t.Fatalf("result = %+v", result)
+	}
+}
+
+func TestDeliverVoiceReplySendTo(t *testing.T) {
+	t.Parallel()
+
+	const target = "!target:example.com"
+
+	app, matrixClient := newTestApp(t)
+
+	result := app.deliverVoiceReply(t.Context(), testRoom, "<send-to>"+target+"</send-to>Report\n<sendfile>/tmp/report.txt</sendfile>")
+	if result.Text != "I sent that to chat." || result.Delivery != deliveryMatrix {
+		t.Fatalf("result = %+v", result)
+	}
+
+	matrixClient.mu.Lock()
+	defer matrixClient.mu.Unlock()
+
+	message := matrixClient.sentMessages[len(matrixClient.sentMessages)-1]
+	file := matrixClient.sentFiles[len(matrixClient.sentFiles)-1]
+
+	if message.conversationID != target || message.text != "Report" {
+		t.Errorf("sent message = %+v", message)
+	}
+
+	if file.conversationID != target {
+		t.Errorf("sent file = %+v", file)
 	}
 }
 

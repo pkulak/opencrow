@@ -42,6 +42,15 @@ func (q *Queries) CountOutbox(ctx context.Context, conversationID string) (int64
 	return count, err
 }
 
+const deleteAllVoiceInbox = `-- name: DeleteAllVoiceInbox :exec
+DELETE FROM inbox WHERE source IN ('voice', 'voice_compact')
+`
+
+func (q *Queries) DeleteAllVoiceInbox(ctx context.Context) error {
+	_, err := q.db.ExecContext(ctx, deleteAllVoiceInbox)
+	return err
+}
+
 const deleteOldestOutbox = `-- name: DeleteOldestOutbox :exec
 DELETE FROM sent_messages
 WHERE rowid IN (
@@ -72,12 +81,24 @@ func (q *Queries) DeleteRecurringReminder(ctx context.Context, id int64) error {
 }
 
 const deleteStaleItems = `-- name: DeleteStaleItems :exec
-DELETE FROM inbox WHERE source IN ('heartbeat', 'compact')
+DELETE FROM inbox WHERE source IN ('heartbeat', 'compact', 'voice', 'voice_compact')
 `
 
 func (q *Queries) DeleteStaleItems(ctx context.Context) error {
 	_, err := q.db.ExecContext(ctx, deleteStaleItems)
 	return err
+}
+
+const deleteVoiceInbox = `-- name: DeleteVoiceInbox :execrows
+DELETE FROM inbox WHERE source = 'voice' AND message_id = ?
+`
+
+func (q *Queries) DeleteVoiceInbox(ctx context.Context, messageID string) (int64, error) {
+	result, err := q.db.ExecContext(ctx, deleteVoiceInbox, messageID)
+	if err != nil {
+		return 0, err
+	}
+	return result.RowsAffected()
 }
 
 const dequeueBackgroundInbox = `-- name: DequeueBackgroundInbox :one
@@ -123,6 +144,35 @@ RETURNING id, priority, source, content, reply_to, conversation_id,
 
 func (q *Queries) DequeueChatInbox(ctx context.Context) (Inbox, error) {
 	row := q.db.QueryRowContext(ctx, dequeueChatInbox)
+	var i Inbox
+	err := row.Scan(
+		&i.ID,
+		&i.Priority,
+		&i.Source,
+		&i.Content,
+		&i.ReplyTo,
+		&i.ConversationID,
+		&i.MessageID,
+		&i.IsGroup,
+		&i.CreatedAt,
+	)
+	return i, err
+}
+
+const dequeueVoiceInbox = `-- name: DequeueVoiceInbox :one
+DELETE FROM inbox
+WHERE id = (
+    SELECT id FROM inbox
+    WHERE source IN ('voice', 'voice_compact')
+    ORDER BY priority ASC, id ASC
+    LIMIT 1
+)
+RETURNING id, priority, source, content, reply_to, conversation_id,
+          message_id, is_group, created_at
+`
+
+func (q *Queries) DequeueVoiceInbox(ctx context.Context) (Inbox, error) {
+	row := q.db.QueryRowContext(ctx, dequeueVoiceInbox)
 	var i Inbox
 	err := row.Scan(
 		&i.ID,

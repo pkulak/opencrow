@@ -80,46 +80,91 @@ func run() int {
 		return 1
 	}
 
-	b, worker, backgroundWorker, err := wireServices(ctx, cfg, db, inbox)
+	b, worker, backgroundWorker, voiceWorker, voiceService, err := wireServices(ctx, cfg, db, inbox)
 	if err != nil {
 		slog.Error("failed to initialize services", "error", err)
 
 		return 1
 	}
 
-	return runServices(ctx, b, worker, backgroundWorker, cancel)
+	return runServices(ctx, b, worker, backgroundWorker, voiceWorker, voiceService, cancel)
 }
 
-// runServices starts the Matrix backend and workers, then shuts them down.
-func runServices(ctx context.Context, b *matrix.Backend, worker, backgroundWorker *Worker, cancel context.CancelFunc) int {
+type serviceResult struct {
+	name string
+	err  error
+}
+
+// runServices starts Matrix, HTTP, and workers, then shuts them down together.
+func runServices(
+	ctx context.Context,
+	b *matrix.Backend,
+	worker, backgroundWorker, voiceWorker *Worker,
+	voiceService *VoiceService,
+	cancel context.CancelFunc,
+) int {
 	setupShutdown(b, cancel)
 
 	workerDone := spawnWorker(ctx, worker)
 	backgroundDone := spawnWorker(ctx, backgroundWorker)
+	voiceWorkerDone := spawnOptionalWorker(ctx, voiceWorker)
+
+	serviceDone := make(chan serviceResult, 2)
+	serviceCount := 1
+
+	go func() { serviceDone <- serviceResult{name: "matrix sync", err: b.Run(ctx)} }()
+
+	if voiceService != nil {
+		serviceCount++
+
+		go func() { serviceDone <- serviceResult{name: "voice HTTP server", err: voiceService.Run(ctx)} }()
+	}
 
 	slog.Info("opencrow starting")
 
-	exitCode := 0
+	first := <-serviceDone
+	exitCode := serviceExitCode(ctx, first)
 
-	if err := b.Run(ctx); err != nil {
-		if ctx.Err() == nil {
-			slog.Error("matrix sync exited with error", "error", err)
+	cancel()
+	b.Stop()
 
-			exitCode = 1
-		} else {
-			slog.Info("shutdown complete")
+	for range serviceCount - 1 {
+		result := <-serviceDone
+		if result.err != nil {
+			slog.Debug(result.name+" stopped during shutdown", "error", result.err)
 		}
 	}
 
-	// Matrix sync may have returned without a signal (error path); ensure
-	// both workers see ctx.Done so the joins below cannot hang.
-	cancel()
 	<-workerDone
 	<-backgroundDone
 
+	if voiceWorkerDone != nil {
+		<-voiceWorkerDone
+	}
+
 	_ = b.Close()
 
+	slog.Info("shutdown complete")
+
 	return exitCode
+}
+
+func serviceExitCode(ctx context.Context, result serviceResult) int {
+	if result.err == nil || ctx.Err() != nil {
+		return 0
+	}
+
+	slog.Error(result.name+" exited with error", "error", result.err)
+
+	return 1
+}
+
+func spawnOptionalWorker(ctx context.Context, worker *Worker) <-chan struct{} {
+	if worker == nil {
+		return nil
+	}
+
+	return spawnWorker(ctx, worker)
 }
 
 // sqliteDSNParams are the connection parameters for modernc.org/sqlite.
@@ -252,11 +297,21 @@ func migrateLegacyOutbox(ctx context.Context, db *sql.DB, sessionDir string) err
 	return nil
 }
 
-// wireServices creates the Matrix backend, app, and worker using two-phase init.
-func wireServices(ctx context.Context, cfg *Config, db *sql.DB, inbox *InboxStore) (*matrix.Backend, *Worker, *Worker, error) {
+// wireServices creates the Matrix backend, app, and workers using two-phase init.
+func wireServices(
+	ctx context.Context,
+	cfg *Config,
+	db *sql.DB,
+	inbox *InboxStore,
+) (*matrix.Backend, *Worker, *Worker, *Worker, *VoiceService, error) {
 	// Phase 1: create objects with nil cross-references.
 	worker := NewWorker(inbox, cfg.Pi)
 	backgroundWorker := NewBackgroundWorker(inbox, cfg.BackgroundPi, defaultTriggerPrompt)
+
+	var voiceWorker *Worker
+	if cfg.HTTP.Listen != "" {
+		voiceWorker = NewVoiceWorker(inbox, cfg.VoicePi)
+	}
 
 	var app *App
 
@@ -265,24 +320,28 @@ func wireServices(ctx context.Context, cfg *Config, db *sql.DB, inbox *InboxStor
 		func(_ string) { worker.Restart() },
 	)
 	if err != nil {
-		return nil, nil, nil, err
+		return nil, nil, nil, nil, nil, err
 	}
 
 	// Phase 2: wire cross-references.
 	app = NewApp(b, worker, inbox, db)
 	app.SetBackgroundWorker(backgroundWorker)
 
+	var voiceService *VoiceService
+	if voiceWorker != nil {
+		voiceService = NewVoiceService(cfg.HTTP, inbox, voiceWorker)
+		app.SetVoice(voiceWorker, voiceService)
+		voiceWorker.SetVoiceService(voiceService)
+	}
+
 	if cfg.GroupTriggerRegex != nil {
 		app.SetGroupTriggerRegex(cfg.GroupTriggerRegex)
 	}
 
-	worker.SetApp(app)
-	worker.SetMatrix(b)
-	backgroundWorker.SetApp(app)
-	backgroundWorker.SetMatrix(b)
-
-	worker.piCfg.SystemPrompt = app.systemPrompt(worker.piCfg.SystemPrompt)
-	backgroundWorker.piCfg.SystemPrompt = app.systemPrompt(backgroundWorker.piCfg.SystemPrompt)
+	wireWorker(worker, app, b)
+	wireWorker(backgroundWorker, app, b)
+	wireWorker(voiceWorker, app, b)
+	configureWorkerPrompts(app, worker, backgroundWorker, voiceWorker)
 
 	go reminderLoop(ctx, backgroundWorker)
 
@@ -290,7 +349,29 @@ func wireServices(ctx context.Context, cfg *Config, db *sql.DB, inbox *InboxStor
 	worker.StartIdleReaper(ctx)
 	backgroundWorker.StartIdleReaper(ctx)
 
-	return b, worker, backgroundWorker, nil
+	if voiceWorker != nil {
+		voiceWorker.StartIdleReaper(ctx)
+	}
+
+	return b, worker, backgroundWorker, voiceWorker, voiceService, nil
+}
+
+func wireWorker(worker *Worker, app *App, backend workerMatrix) {
+	if worker == nil {
+		return
+	}
+
+	worker.SetApp(app)
+	worker.SetMatrix(backend)
+}
+
+func configureWorkerPrompts(app *App, worker, backgroundWorker, voiceWorker *Worker) {
+	worker.piCfg.SystemPrompt = app.systemPrompt(worker.piCfg.SystemPrompt)
+
+	backgroundWorker.piCfg.SystemPrompt = app.systemPrompt(backgroundWorker.piCfg.SystemPrompt)
+	if voiceWorker != nil {
+		voiceWorker.piCfg.SystemPrompt = strings.TrimRight(app.systemPrompt(voiceWorker.piCfg.SystemPrompt), "\n") + "\n\n" + voiceSystemPrompt
+	}
 }
 
 // spawnWorker runs the worker loop in a goroutine and returns a channel

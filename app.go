@@ -114,6 +114,8 @@ type App struct {
 	matrix            appMatrix
 	worker            *Worker
 	backgroundWorker  *Worker
+	voiceWorker       *Worker
+	voiceService      *VoiceService
 	inbox             *InboxStore
 	outbox            *outboxStore
 	roomContext       *roomContextStore
@@ -139,6 +141,12 @@ func NewApp(matrixClient appMatrix, worker *Worker, inbox *InboxStore, db *sql.D
 // SetBackgroundWorker wires the background worker after construction.
 func (a *App) SetBackgroundWorker(worker *Worker) { a.backgroundWorker = worker }
 
+// SetVoice wires the optional HTTP voice service and its worker.
+func (a *App) SetVoice(worker *Worker, service *VoiceService) {
+	a.voiceWorker = worker
+	a.voiceService = service
+}
+
 // SetGroupTriggerRegex configures the regex used to filter unaddressed group messages.
 func (a *App) SetGroupTriggerRegex(re *regexp.Regexp) {
 	a.mu.Lock()
@@ -148,7 +156,7 @@ func (a *App) SetGroupTriggerRegex(re *regexp.Regexp) {
 }
 
 // HandleMessage dispatches commands and enqueues normal Matrix messages.
-func (a *App) HandleMessage(ctx context.Context, msg matrix.Message) {
+func (a *App) HandleMessage(ctx context.Context, msg matrix.Message) { //nolint:cyclop // commands intentionally stay explicit
 	// Record the incoming message so future reply-to references can quote it.
 	a.outbox.Put(ctx, msg.ConversationID, msg.MessageID, msg.Text)
 
@@ -163,6 +171,12 @@ func (a *App) HandleMessage(ctx context.Context, msg matrix.Message) {
 		a.handleBackgroundStop(ctx, msg)
 	case "!background-restart":
 		a.handleBackgroundRestart(ctx, msg)
+	case "!voice-stop":
+		a.handleVoiceStop(ctx, msg)
+	case "!voice-restart":
+		a.handleVoiceRestart(ctx, msg)
+	case "!voice-compact":
+		a.handleVoiceCompact(ctx, msg)
 	case "!compact":
 		a.handleCompact(ctx, msg)
 	case "!skills":
@@ -180,7 +194,10 @@ func (a *App) handleHelp(ctx context.Context, msg matrix.Message) {
 		"  !compact — Compact conversation context to reduce token usage\n" +
 		"  !skills  — List loaded skills\n" +
 		"  !background-stop — Abort the active background task\n" +
-		"  !background-restart — Restart the background session"
+		"  !background-restart — Restart the background session\n" +
+		"  !voice-stop — Abort the active voice turn\n" +
+		"  !voice-restart — Restart the voice session\n" +
+		"  !voice-compact — Compact the voice session"
 	a.matrix.SendMessage(ctx, msg.ConversationID, help, "")
 }
 
@@ -209,6 +226,52 @@ func (a *App) handleBackgroundRestart(ctx context.Context, msg matrix.Message) {
 
 	a.backgroundWorker.Restart()
 	a.matrix.SendMessage(ctx, msg.ConversationID, "Background session restarted. Next background task starts fresh.", "")
+}
+
+func (a *App) handleVoiceStop(ctx context.Context, msg matrix.Message) {
+	if a.voiceWorker == nil || !a.voiceWorker.Abort() {
+		a.matrix.SendMessage(ctx, msg.ConversationID, "No active voice turn.", "")
+
+		return
+	}
+
+	a.matrix.SendMessage(ctx, msg.ConversationID, "Aborted voice turn.", "")
+}
+
+func (a *App) handleVoiceRestart(ctx context.Context, msg matrix.Message) {
+	if a.voiceService == nil {
+		a.matrix.SendMessage(ctx, msg.ConversationID, "No voice service.", "")
+
+		return
+	}
+
+	if err := a.voiceService.restart(ctx); err != nil {
+		slog.Error("voice restart failed", "error", err)
+		a.matrix.SendMessage(ctx, msg.ConversationID, fmt.Sprintf("Voice restart failed: %v", err), "")
+
+		return
+	}
+
+	a.matrix.SendMessage(ctx, msg.ConversationID, "Voice session restarted. Next voice request starts fresh.", "")
+}
+
+func (a *App) handleVoiceCompact(ctx context.Context, msg matrix.Message) {
+	if a.voiceWorker == nil || !a.voiceWorker.IsActive() {
+		a.matrix.SendMessage(ctx, msg.ConversationID, "No active voice session to compact.", "")
+
+		return
+	}
+
+	result, err := a.voiceWorker.Compact(ctx)
+	if err != nil {
+		slog.Error("voice compact failed", "error", err)
+		a.matrix.SendMessage(ctx, msg.ConversationID, fmt.Sprintf("Voice compaction failed: %v", err), "")
+
+		return
+	}
+
+	reply := fmt.Sprintf("Compacted voice conversation (was %d tokens).\nSummary: %s", result.TokensBefore, result.Summary)
+	a.matrix.SendMessage(ctx, msg.ConversationID, reply, "")
 }
 
 func (a *App) handleStop(ctx context.Context, msg matrix.Message) {
@@ -428,6 +491,76 @@ func (a *App) sendReaction(ctx context.Context, conversationID string, reaction 
 	} else {
 		a.recordAgentActivity(conversationID)
 	}
+}
+
+// deliverVoiceReply applies Matrix control tags and returns the text that
+// should be spoken by Home Assistant.
+func (a *App) deliverVoiceReply(ctx context.Context, defaultRoomID, reply string) VoiceResponse {
+	cleanReply, targetRoom := extractSendTo(reply)
+	cleanReply, filePaths := extractSendFiles(cleanReply)
+
+	if targetRoom != "" {
+		return a.deliverVoiceToMatrix(ctx, targetRoom, cleanReply, filePaths)
+	}
+
+	return a.deliverVoiceFiles(ctx, defaultRoomID, cleanReply, filePaths)
+}
+
+func (a *App) deliverVoiceToMatrix(ctx context.Context, roomID, text string, filePaths []string) VoiceResponse {
+	sentFileCount, filesOK := a.uploadVoiceFiles(ctx, roomID, filePaths)
+
+	var sentID string
+
+	messageOK := true
+
+	if text != "" {
+		sentID = a.matrix.SendMessage(ctx, roomID, text, "")
+
+		messageOK = sentID != ""
+		if messageOK {
+			a.outbox.Put(ctx, roomID, sentID, text)
+		}
+	}
+
+	delivered := sentID != "" || sentFileCount > 0
+	if delivered {
+		a.recordAgentActivity(roomID)
+	}
+
+	if !delivered || !messageOK || !filesOK {
+		return VoiceResponse{Text: "I couldn't send that to chat.", Delivery: deliveryVoice}
+	}
+
+	return VoiceResponse{Text: "I sent that to chat.", Delivery: deliveryMatrix}
+}
+
+func (a *App) deliverVoiceFiles(ctx context.Context, defaultRoomID, text string, filePaths []string) VoiceResponse {
+	_, filesOK := a.uploadVoiceFiles(ctx, defaultRoomID, filePaths)
+	if !filesOK {
+		text = "I couldn't send the file to chat."
+	} else if len(filePaths) > 0 {
+		a.recordAgentActivity(defaultRoomID)
+
+		if text == "" {
+			text = "I sent your file to chat."
+		}
+	}
+
+	return VoiceResponse{Text: text, Delivery: deliveryVoice}
+}
+
+func (a *App) uploadVoiceFiles(ctx context.Context, roomID string, filePaths []string) (int, bool) {
+	if len(filePaths) == 0 {
+		return 0, true
+	}
+
+	if roomID == "" {
+		return 0, false
+	}
+
+	sentFiles, _ := a.sendFiles(ctx, roomID, filePaths, false)
+
+	return len(sentFiles), len(sentFiles) == len(filePaths)
 }
 
 // sendReplyWithFiles extracts <sendfile> tags, uploads each file, and sends

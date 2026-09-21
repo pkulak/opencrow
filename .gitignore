@@ -1,3 +1,9 @@
 opencrow
 result
 .direnv
+__pycache__/
+*.pyc
+
+# Some developer environments ignore Home Assistant custom_components globally.
+!integrations/home_assistant/custom_components/
+!integrations/home_assistant/custom_components/**

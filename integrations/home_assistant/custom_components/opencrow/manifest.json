@@ -1,0 +1,11 @@
+{
+  "domain": "opencrow",
+  "name": "OpenCrow",
+  "after_dependencies": ["assist_pipeline", "intent"],
+  "config_flow": true,
+  "dependencies": ["conversation"],
+  "documentation": "https://github.com/pinpox/opencrow",
+  "integration_type": "service",
+  "iot_class": "local_polling",
+  "version": "0.1.0"
+}

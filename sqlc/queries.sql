@@ -47,8 +47,25 @@ WHERE id = (
 RETURNING id, priority, source, content, reply_to, conversation_id,
           message_id, is_group, created_at;
 
+-- name: DequeueVoiceInbox :one
+DELETE FROM inbox
+WHERE id = (
+    SELECT id FROM inbox
+    WHERE source IN ('voice', 'voice_compact')
+    ORDER BY priority ASC, id ASC
+    LIMIT 1
+)
+RETURNING id, priority, source, content, reply_to, conversation_id,
+          message_id, is_group, created_at;
+
+-- name: DeleteVoiceInbox :execrows
+DELETE FROM inbox WHERE source = 'voice' AND message_id = ?;
+
+-- name: DeleteAllVoiceInbox :exec
+DELETE FROM inbox WHERE source IN ('voice', 'voice_compact');
+
 -- name: DeleteStaleItems :exec
-DELETE FROM inbox WHERE source IN ('heartbeat', 'compact');
+DELETE FROM inbox WHERE source IN ('heartbeat', 'compact', 'voice', 'voice_compact');
 
 -- name: CountInbox :one
 SELECT count(*) FROM inbox;

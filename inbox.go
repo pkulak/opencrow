@@ -21,8 +21,8 @@ type InboxStore struct {
 }
 
 // NewInboxStore wraps an existing database connection. The schema must
-// already be applied (openDB handles this). Clears stale legacy heartbeat and
-// compact items left over from a previous crash.
+// already be applied (openDB handles this). Clears stale items whose in-memory
+// completion state cannot survive a restart.
 func NewInboxStore(ctx context.Context, db *sql.DB) (*InboxStore, error) {
 	queries := New(db)
 
@@ -60,6 +60,17 @@ func (s *InboxStore) EnqueueUser(ctx context.Context, content, replyTo, conversa
 	})
 }
 
+// EnqueueVoice inserts an ephemeral voice request. requestID is stored in the
+// message metadata column so cancellation can remove it before dequeue.
+func (s *InboxStore) EnqueueVoice(ctx context.Context, requestID, content string) error {
+	return s.enqueue(ctx, EnqueueInboxParams{
+		Priority:  PriorityUser,
+		Source:    sourceVoice,
+		Content:   content,
+		MessageID: requestID,
+	})
+}
+
 // DequeueChat removes and returns a chat item. Returns sql.ErrNoRows if none exist.
 func (s *InboxStore) DequeueChat(ctx context.Context) (Inbox, error) {
 	return s.queries.DequeueChatInbox(ctx)
@@ -68,6 +79,30 @@ func (s *InboxStore) DequeueChat(ctx context.Context) (Inbox, error) {
 // DequeueBackground removes and returns a background item. Returns sql.ErrNoRows if none exist.
 func (s *InboxStore) DequeueBackground(ctx context.Context) (Inbox, error) {
 	return s.queries.DequeueBackgroundInbox(ctx)
+}
+
+// DequeueVoice removes and returns a voice item. Returns sql.ErrNoRows if none exist.
+func (s *InboxStore) DequeueVoice(ctx context.Context) (Inbox, error) {
+	return s.queries.DequeueVoiceInbox(ctx)
+}
+
+// DeleteVoice removes a queued voice request by its request ID.
+func (s *InboxStore) DeleteVoice(ctx context.Context, requestID string) (bool, error) {
+	count, err := s.queries.DeleteVoiceInbox(ctx, requestID)
+	if err != nil {
+		return false, fmt.Errorf("deleting voice request: %w", err)
+	}
+
+	return count > 0, nil
+}
+
+// DeleteAllVoice removes all queued voice requests and voice compactions.
+func (s *InboxStore) DeleteAllVoice(ctx context.Context) error {
+	if err := s.queries.DeleteAllVoiceInbox(ctx); err != nil {
+		return fmt.Errorf("deleting all voice requests: %w", err)
+	}
+
+	return nil
 }
 
 // Requeue re-inserts an interrupted item.

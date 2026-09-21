@@ -14,7 +14,14 @@ type Config struct {
 	Matrix            MatrixConfig
 	Pi                PiConfig
 	BackgroundPi      PiConfig
+	VoicePi           PiConfig
+	HTTP              HTTPConfig
 	GroupTriggerRegex *regexp.Regexp
+}
+
+type HTTPConfig struct {
+	Listen      string
+	BearerToken string
 }
 
 type MatrixConfig struct {
@@ -87,6 +94,14 @@ func loadConfig(getenv func(string) string) (*Config, error) {
 		groupTriggerRegex = re
 	}
 
+	httpCfg := HTTPConfig{
+		Listen:      env.str("OPENCROW_HTTP_LISTEN"),
+		BearerToken: env.str("OPENCROW_HTTP_BEARER_TOKEN"),
+	}
+	if httpCfg.Listen != "" && httpCfg.BearerToken == "" {
+		return nil, errors.New("OPENCROW_HTTP_BEARER_TOKEN is required when OPENCROW_HTTP_LISTEN is set")
+	}
+
 	cfg := &Config{
 		Matrix: MatrixConfig{
 			Homeserver:   env.str("OPENCROW_MATRIX_HOMESERVER"),
@@ -99,6 +114,8 @@ func loadConfig(getenv func(string) string) (*Config, error) {
 		},
 		Pi:                loadPiConfig(env, workingDir, idleTimeout, skills),
 		BackgroundPi:      loadBackgroundPiConfig(env, workingDir, idleTimeout, skills),
+		VoicePi:           loadVoicePiConfig(env, workingDir, idleTimeout, skills),
+		HTTP:              httpCfg,
 		GroupTriggerRegex: groupTriggerRegex,
 	}
 
@@ -143,6 +160,13 @@ func loadBackgroundPiConfig(env envReader, workingDir string, idleTimeout time.D
 	cfg.SessionDir = filepath.Join(cfg.StateDir, "background")
 	cfg.Provider = env.or("OPENCROW_BACKGROUND_PI_PROVIDER", cfg.Provider)
 	cfg.Model = env.or("OPENCROW_BACKGROUND_PI_MODEL", cfg.Model)
+
+	return cfg
+}
+
+func loadVoicePiConfig(env envReader, workingDir string, idleTimeout time.Duration, skills []string) PiConfig {
+	cfg := loadPiConfig(env, workingDir, idleTimeout, skills)
+	cfg.SessionDir = filepath.Join(cfg.StateDir, "voice")
 
 	return cfg
 }

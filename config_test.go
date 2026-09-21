@@ -10,6 +10,7 @@ import (
 const (
 	testChatProvider = "chat-provider"
 	testChatModel    = "chat-model"
+	testSessionDir   = "/tmp/opencrow"
 )
 
 func TestMatrixConfig_ValidateReportsAllMissing(t *testing.T) {
@@ -53,7 +54,7 @@ func TestLoadConfig_BackgroundPiOverrides(t *testing.T) {
 	t.Parallel()
 
 	env := baseMatrixEnv()
-	env["OPENCROW_PI_SESSION_DIR"] = "/tmp/opencrow"
+	env["OPENCROW_PI_SESSION_DIR"] = testSessionDir
 	env["OPENCROW_PI_PROVIDER"] = testChatProvider
 	env["OPENCROW_PI_MODEL"] = testChatModel
 	env["OPENCROW_BACKGROUND_PI_MODEL"] = "background-model"
@@ -73,6 +74,51 @@ func TestLoadConfig_BackgroundPiOverrides(t *testing.T) {
 
 	if cfg.BackgroundPi.Provider != testChatProvider || cfg.BackgroundPi.Model != "background-model" {
 		t.Errorf("background model config = %q/%q", cfg.BackgroundPi.Provider, cfg.BackgroundPi.Model)
+	}
+}
+
+func TestLoadConfig_VoiceInheritsChatConfig(t *testing.T) {
+	t.Parallel()
+
+	env := baseMatrixEnv()
+	env["OPENCROW_PI_SESSION_DIR"] = testSessionDir
+	env["OPENCROW_PI_PROVIDER"] = testChatProvider
+	env["OPENCROW_PI_MODEL"] = testChatModel
+
+	cfg, err := loadConfig(testEnv(env))
+	if err != nil {
+		t.Fatal(err)
+	}
+
+	if cfg.VoicePi.SessionDir != "/tmp/opencrow/voice" {
+		t.Errorf("voice session dir = %q", cfg.VoicePi.SessionDir)
+	}
+
+	if cfg.VoicePi.Provider != testChatProvider || cfg.VoicePi.Model != testChatModel {
+		t.Errorf("voice model config = %q/%q", cfg.VoicePi.Provider, cfg.VoicePi.Model)
+	}
+}
+
+func TestLoadConfig_HTTPRequiresBearerToken(t *testing.T) {
+	t.Parallel()
+
+	env := baseMatrixEnv()
+	env["OPENCROW_HTTP_LISTEN"] = "127.0.0.1:8787"
+
+	_, err := loadConfig(testEnv(env))
+	if err == nil || !strings.Contains(err.Error(), "OPENCROW_HTTP_BEARER_TOKEN") {
+		t.Fatalf("error = %v, want missing bearer token", err)
+	}
+
+	env["OPENCROW_HTTP_BEARER_TOKEN"] = "secret"
+
+	cfg, err := loadConfig(testEnv(env))
+	if err != nil {
+		t.Fatal(err)
+	}
+
+	if cfg.HTTP.Listen != "127.0.0.1:8787" || cfg.HTTP.BearerToken != "secret" {
+		t.Errorf("HTTP config = %+v", cfg.HTTP)
 	}
 }
 

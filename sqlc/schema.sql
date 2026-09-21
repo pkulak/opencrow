@@ -24,7 +24,7 @@ CREATE TABLE IF NOT EXISTS recurring_reminders (
 CREATE TABLE IF NOT EXISTS inbox (
     id              INTEGER PRIMARY KEY AUTOINCREMENT,
     priority        INTEGER NOT NULL DEFAULT 2,  -- legacy ordering metadata
-    source          TEXT    NOT NULL,             -- "user", "trigger", "compact" (or legacy heartbeat)
+    source          TEXT    NOT NULL,             -- "user", "trigger", "compact", "voice", or "voice_compact"
     content         TEXT    NOT NULL DEFAULT '',
     reply_to        TEXT    NOT NULL DEFAULT '',  -- Matrix event ID to reply to
     conversation_id TEXT    NOT NULL DEFAULT '',  -- Matrix room ID for routing replies

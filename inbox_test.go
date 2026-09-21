@@ -62,6 +62,7 @@ func TestInbox_SourceRouting(t *testing.T) {
 	inbox := newTestInbox(ctx, t)
 	must(t, inbox.Enqueue(ctx, PriorityTrigger, sourceTrigger, "trigger", "", ""))
 	must(t, inbox.Enqueue(ctx, PriorityUser, sourceUser, "user", "", ""))
+	must(t, inbox.EnqueueVoice(ctx, "voice-request", "voice"))
 
 	chat, err := inbox.DequeueChat(ctx)
 	must(t, err)
@@ -75,6 +76,13 @@ func TestInbox_SourceRouting(t *testing.T) {
 
 	if background.Source != sourceTrigger {
 		t.Errorf("background source = %q, want trigger", background.Source)
+	}
+
+	voice, err := inbox.DequeueVoice(ctx)
+	must(t, err)
+
+	if voice.Source != sourceVoice || voice.MessageID != "voice-request" {
+		t.Errorf("voice item = %+v", voice)
 	}
 }
 
@@ -98,11 +106,13 @@ func TestInbox_ClearsStaleItemsOnInit(t *testing.T) {
 	ctx := context.Background()
 	db := newTestDB(ctx, t)
 
-	// Heartbeat and compact items have in-memory state that doesn't
-	// survive a restart; both must be purged on init.
+	// Heartbeat, compact, and voice items have in-memory state that doesn't
+	// survive a restart, so all must be purged on init.
 	seedInbox(t, db, []string{
 		"INSERT INTO inbox (priority, source, content) VALUES (2, 'heartbeat', '')",
 		"INSERT INTO inbox (priority, source, content) VALUES (0, 'compact', '')",
+		"INSERT INTO inbox (priority, source, content, message_id) VALUES (0, 'voice', 'stale voice', 'request')",
+		"INSERT INTO inbox (priority, source, content) VALUES (0, 'voice_compact', '')",
 		// These should survive.
 		"INSERT INTO inbox (priority, source, content) VALUES (0, 'user', 'keep me')",
 		"INSERT INTO inbox (priority, source, content) VALUES (1, 'trigger', 'event data')",
@@ -117,7 +127,7 @@ func TestInbox_ClearsStaleItemsOnInit(t *testing.T) {
 	must(t, err)
 
 	if count != 2 {
-		t.Fatalf("count = %d, want 2 (heartbeat and compact should be cleared)", count)
+		t.Fatalf("count = %d, want 2 (ephemeral items should be cleared)", count)
 	}
 
 	item1, err := inbox.DequeueChat(ctx)
@@ -132,6 +142,29 @@ func TestInbox_ClearsStaleItemsOnInit(t *testing.T) {
 
 	if item2.Source != sourceTrigger {
 		t.Errorf("second item source = %q, want %q", item2.Source, sourceTrigger)
+	}
+}
+
+func TestInbox_DeleteQueuedVoiceRequest(t *testing.T) {
+	t.Parallel()
+
+	ctx := context.Background()
+	inbox := newTestInbox(ctx, t)
+	must(t, inbox.EnqueueVoice(ctx, "keep", "first"))
+	must(t, inbox.EnqueueVoice(ctx, "delete", "second"))
+
+	deleted, err := inbox.DeleteVoice(ctx, "delete")
+	must(t, err)
+
+	if !deleted {
+		t.Fatal("DeleteVoice returned false")
+	}
+
+	item, err := inbox.DequeueVoice(ctx)
+	must(t, err)
+
+	if item.MessageID != "keep" {
+		t.Fatalf("dequeued request = %q, want keep", item.MessageID)
 	}
 }
 

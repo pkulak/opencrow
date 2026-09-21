@@ -7,6 +7,7 @@ import (
 	"errors"
 	"fmt"
 	"log/slog"
+	"net/http"
 	"os"
 	"path/filepath"
 	"strings"
@@ -17,12 +18,15 @@ import (
 
 // Source names for inbox items.
 const (
-	sourceUser    = "user"
-	sourceTrigger = "trigger"
-	sourceCompact = "compact"
+	noReplyToken       = "NO_REPLY"
+	sourceUser         = "user"
+	sourceTrigger      = "trigger"
+	sourceCompact      = "compact"
+	sourceVoice        = "voice"
+	sourceVoiceCompact = "voice_compact"
 )
 
-// Worker owns one Pi process and drains either chat or background inbox items.
+// Worker owns one Pi process and drains chat, background, or voice inbox items.
 type Worker struct {
 	inbox   *InboxStore
 	piCfg   PiConfig
@@ -33,14 +37,17 @@ type Worker struct {
 	roomID atomic.Value // string, resolved lazily from .room_id file
 
 	background    bool
+	voice         bool
+	voiceService  *VoiceService
 	triggerPrompt string
 
-	// mu protects pi, lastUse, compactResult, currentCancel, freshStart.
+	// mu protects pi, lastUse, compactResult, currentCancel, currentItemID, and freshStart.
 	mu            sync.Mutex
 	pi            *PiProcess
 	freshStart    bool // next ensurePi spawns without --continue
 	lastUse       time.Time
 	currentCancel context.CancelFunc
+	currentItemID string
 	compactResult chan compactOutcome
 
 	// wake is signalled (non-blocking) after new work is enqueued.
@@ -68,6 +75,14 @@ func NewBackgroundWorker(inbox *InboxStore, piCfg PiConfig, triggerPrompt string
 	return newWorker(inbox, piCfg, triggerPrompt, true)
 }
 
+// NewVoiceWorker creates a worker for HTTP voice turns.
+func NewVoiceWorker(inbox *InboxStore, piCfg PiConfig) *Worker {
+	worker := newWorker(inbox, piCfg, "", false)
+	worker.voice = true
+
+	return worker
+}
+
 func newWorker(inbox *InboxStore, piCfg PiConfig, triggerPrompt string, background bool) *Worker {
 	return &Worker{
 		inbox:         inbox,
@@ -85,6 +100,9 @@ func (w *Worker) SetApp(app *App) { w.app = app }
 
 // SetMatrix wires the Matrix reference (phase 2 of init).
 func (w *Worker) SetMatrix(matrixClient workerMatrix) { w.matrix = matrixClient }
+
+// SetVoiceService wires completion routing for a voice worker.
+func (w *Worker) SetVoiceService(service *VoiceService) { w.voiceService = service }
 
 // Notify wakes the worker loop after an item is enqueued.
 func (w *Worker) Notify() {
@@ -120,6 +138,22 @@ func (w *Worker) Abort() bool {
 	w.mu.Unlock()
 
 	if cancel != nil {
+		cancel()
+
+		return true
+	}
+
+	return false
+}
+
+// AbortItem cancels the current operation only if it belongs to requestID.
+func (w *Worker) AbortItem(requestID string) bool {
+	w.mu.Lock()
+	cancel := w.currentCancel
+	matches := cancel != nil && w.currentItemID == requestID
+	w.mu.Unlock()
+
+	if matches {
 		cancel()
 
 		return true
@@ -176,7 +210,12 @@ func (w *Worker) Compact(ctx context.Context) (*CompactResult, error) {
 	w.compactResult = ch
 	w.mu.Unlock()
 
-	if err := w.inbox.Enqueue(ctx, PriorityUser, sourceCompact, "", "", ""); err != nil {
+	source := sourceCompact
+	if w.voice {
+		source = sourceVoiceCompact
+	}
+
+	if err := w.inbox.Enqueue(ctx, PriorityUser, source, "", "", ""); err != nil {
 		w.mu.Lock()
 		w.compactResult = nil
 		w.mu.Unlock()
@@ -250,6 +289,10 @@ func (w *Worker) dequeue(ctx context.Context) (Inbox, error) {
 		return w.inbox.DequeueBackground(ctx)
 	}
 
+	if w.voice {
+		return w.inbox.DequeueVoice(ctx)
+	}
+
 	return w.inbox.DequeueChat(ctx)
 }
 
@@ -287,19 +330,24 @@ func (w *Worker) processItem(ctx context.Context, item Inbox) bool {
 
 	w.mu.Lock()
 	w.currentCancel = cancel
+	w.currentItemID = item.MessageID
 	w.mu.Unlock()
 
 	defer func() {
 		w.mu.Lock()
 		w.currentCancel = nil
+		w.currentItemID = ""
 		w.mu.Unlock()
 	}()
 
 	var stopDraining bool
 
-	if item.Source == sourceCompact {
+	switch item.Source {
+	case sourceCompact, sourceVoiceCompact:
 		w.processCompact(itemCtx)
-	} else {
+	case sourceVoice:
+		w.processVoicePrompt(itemCtx, item)
+	default:
 		stopDraining = w.processPrompt(itemCtx, item)
 	}
 
@@ -367,6 +415,84 @@ func (w *Worker) processPrompt(ctx context.Context, item Inbox) bool {
 	w.app.sendReplyWithFiles(ctx, convID, reply, replyToID, !w.background, w.background)
 
 	return false
+}
+
+func (w *Worker) processVoicePrompt(ctx context.Context, item Inbox) {
+	if w.voiceService == nil {
+		slog.Error("voice worker has no completion service")
+
+		return
+	}
+
+	deadline, ok := w.voiceService.begin(item.MessageID)
+	if !ok {
+		slog.Info("voice worker: skipping orphaned request", "request_id", item.MessageID)
+
+		return
+	}
+
+	turnCtx, cancel := context.WithDeadline(ctx, deadline)
+	defer cancel()
+
+	pi, reply, err := w.sendWithRetry(turnCtx, injectTimestamp(item.Content), nil)
+	if err != nil {
+		w.handleVoicePiError(turnCtx, item.MessageID, pi, err)
+
+		return
+	}
+
+	w.mu.Lock()
+	w.lastUse = time.Now()
+	w.mu.Unlock()
+
+	reply = w.prepareVoiceReply(turnCtx, pi, reply)
+	if shouldSuppressReply(reply, sourceVoice, false) {
+		w.voiceService.complete(item.MessageID, VoiceResponse{Text: "", Delivery: deliveryVoice})
+
+		return
+	}
+
+	result := w.app.deliverVoiceReply(turnCtx, w.piCfg.DefaultRoomID, reply)
+	w.voiceService.complete(item.MessageID, result)
+}
+
+func (w *Worker) handleVoicePiError(ctx context.Context, requestID string, pi *PiProcess, err error) {
+	if isContextCancellation(ctx, err) {
+		w.stopPi()
+		w.voiceService.completeError(requestID, voiceCancellationError(ctx))
+
+		return
+	}
+
+	var providerErr *providerError
+	if !errors.As(err, &providerErr) && pi != nil {
+		w.stopPi()
+	}
+
+	slog.Error("voice worker: pi prompt failed", "request_id", requestID, "error", err)
+	w.voiceService.completeError(requestID, &voiceError{
+		Status:  http.StatusBadGateway,
+		Code:    "agent_failed",
+		Message: "OpenCrow could not complete the request.",
+	})
+}
+
+func voiceCancellationError(ctx context.Context) *voiceError {
+	if errors.Is(ctx.Err(), context.DeadlineExceeded) {
+		return &voiceError{Status: http.StatusGatewayTimeout, Code: "timeout", Message: "The voice turn took too long."}
+	}
+
+	return &voiceError{Status: http.StatusServiceUnavailable, Code: "turn_cancelled", Message: "The voice turn was cancelled."}
+}
+
+func (w *Worker) prepareVoiceReply(ctx context.Context, pi *PiProcess, reply string) string {
+	reply, _ = extractReaction(reply)
+	if reply == "" {
+		reply = w.retryEmptyResponse(ctx, pi, nil)
+		reply, _ = extractReaction(reply)
+	}
+
+	return reply
 }
 
 // prepareReply extracts and applies an optional Matrix reaction, and retries a
@@ -491,7 +617,7 @@ func shouldSuppressReply(reply, source string, background bool) bool {
 	}
 
 	trimmed := strings.TrimSpace(reply)
-	if trimmed == "NO_REPLY" {
+	if trimmed == noReplyToken {
 		slog.Info(source + ": NO_REPLY, suppressing")
 
 		return true
@@ -499,7 +625,7 @@ func shouldSuppressReply(reply, source string, background bool) bool {
 
 	if background {
 		lines := strings.Split(trimmed, "\n")
-		if strings.TrimSpace(lines[0]) == "NO_REPLY" || strings.TrimSpace(lines[len(lines)-1]) == "NO_REPLY" {
+		if strings.TrimSpace(lines[0]) == noReplyToken || strings.TrimSpace(lines[len(lines)-1]) == noReplyToken {
 			slog.Info(source + ": NO_REPLY (background), suppressing")
 
 			return true
