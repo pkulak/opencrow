@@ -32,6 +32,12 @@ func NewInboxStore(ctx context.Context, db *sql.DB) (*InboxStore, error) {
 		return nil, fmt.Errorf("clearing stale inbox items: %w", err)
 	}
 
+	// A claimed trigger belonged to a background turn that no longer exists,
+	// so re-queue it for another attempt.
+	if _, err := queries.ResetClaimedTriggers(ctx); err != nil {
+		return nil, fmt.Errorf("resetting claimed triggers: %w", err)
+	}
+
 	return &InboxStore{queries: queries}, nil
 }
 
@@ -76,9 +82,20 @@ func (s *InboxStore) DequeueChat(ctx context.Context) (Inbox, error) {
 	return s.queries.DequeueChatInbox(ctx)
 }
 
-// DequeueBackground removes and returns a background item. Returns sql.ErrNoRows if none exist.
-func (s *InboxStore) DequeueBackground(ctx context.Context) (Inbox, error) {
-	return s.queries.DequeueBackgroundInbox(ctx)
+// ClaimBackground takes the oldest pending trigger, stamping it as claimed so
+// the row survives a crash until Complete removes it. Returns sql.ErrNoRows if
+// no unclaimed trigger exists.
+func (s *InboxStore) ClaimBackground(ctx context.Context) (Inbox, error) {
+	return s.queries.ClaimBackgroundInbox(ctx)
+}
+
+// Complete removes a claimed inbox item once its turn has finished.
+func (s *InboxStore) Complete(ctx context.Context, id int64) error {
+	if _, err := s.queries.CompleteInbox(ctx, id); err != nil {
+		return fmt.Errorf("completing inbox item %d: %w", id, err)
+	}
+
+	return nil
 }
 
 // DequeueVoice removes and returns a voice item. Returns sql.ErrNoRows if none exist.

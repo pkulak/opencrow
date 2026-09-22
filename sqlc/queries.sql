@@ -34,18 +34,22 @@ WHERE id = (
     LIMIT 1
 )
 RETURNING id, priority, source, content, reply_to, conversation_id,
-          message_id, is_group, created_at;
+          message_id, is_group, claimed_at, created_at;
 
--- name: DequeueBackgroundInbox :one
-DELETE FROM inbox
+-- name: ClaimBackgroundInbox :one
+-- Claims the oldest pending trigger by stamping claimed_at. The row stays in
+-- the inbox until the turn finishes so a crash or restart can recover it; see
+-- ResetClaimedTriggers.
+UPDATE inbox
+SET claimed_at = strftime('%Y-%m-%dT%H:%M:%fZ', 'now')
 WHERE id = (
     SELECT id FROM inbox
-    WHERE source = 'trigger'
+    WHERE source = 'trigger' AND claimed_at = ''
     ORDER BY priority ASC, id ASC
     LIMIT 1
 )
 RETURNING id, priority, source, content, reply_to, conversation_id,
-          message_id, is_group, created_at;
+          message_id, is_group, claimed_at, created_at;
 
 -- name: DequeueVoiceInbox :one
 DELETE FROM inbox
@@ -56,7 +60,16 @@ WHERE id = (
     LIMIT 1
 )
 RETURNING id, priority, source, content, reply_to, conversation_id,
-          message_id, is_group, created_at;
+          message_id, is_group, claimed_at, created_at;
+
+-- name: CompleteInbox :execrows
+DELETE FROM inbox WHERE id = ?;
+
+-- name: ResetClaimedTriggers :execrows
+-- A trigger is claimed while a background turn handles it. No turn can survive
+-- a restart, so any claim left at startup belongs to a dead run and must be
+-- retried.
+UPDATE inbox SET claimed_at = '' WHERE source = 'trigger' AND claimed_at != '';
 
 -- name: DeleteVoiceInbox :execrows
 DELETE FROM inbox WHERE source = 'voice' AND message_id = ?;

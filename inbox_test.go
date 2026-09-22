@@ -3,6 +3,7 @@ package main
 import (
 	"context"
 	"database/sql"
+	"errors"
 	"testing"
 
 	_ "modernc.org/sqlite"
@@ -71,7 +72,7 @@ func TestInbox_SourceRouting(t *testing.T) {
 		t.Errorf("chat source = %q, want user", chat.Source)
 	}
 
-	background, err := inbox.DequeueBackground(ctx)
+	background, err := inbox.ClaimBackground(ctx)
 	must(t, err)
 
 	if background.Source != sourceTrigger {
@@ -137,7 +138,7 @@ func TestInbox_ClearsStaleItemsOnInit(t *testing.T) {
 		t.Errorf("first item source = %q, want %q", item1.Source, sourceUser)
 	}
 
-	item2, err := inbox.DequeueBackground(ctx)
+	item2, err := inbox.ClaimBackground(ctx)
 	must(t, err)
 
 	if item2.Source != sourceTrigger {
@@ -214,11 +215,48 @@ func TestInbox_Persistence(t *testing.T) {
 		t.Fatalf("count after reopen = %d, want 1", count)
 	}
 
-	item, err := inbox2.DequeueBackground(ctx)
+	item, err := inbox2.ClaimBackground(ctx)
 	must(t, err)
 
 	if item.Content != "survived crash" {
 		t.Errorf("Content = %q, want %q", item.Content, "survived crash")
+	}
+}
+
+func TestInbox_RecoversClaimedTriggerOnRestart(t *testing.T) {
+	t.Parallel()
+
+	ctx := context.Background()
+	dbPath := t.TempDir() + "/test.db"
+
+	db1 := newTestDBAt(ctx, t, dbPath)
+	inbox1 := newTestInboxWithDB(ctx, t, db1)
+
+	must(t, inbox1.Enqueue(ctx, PriorityTrigger, sourceTrigger, "interrupted", "", ""))
+
+	claimed, err := inbox1.ClaimBackground(ctx)
+	must(t, err)
+
+	if claimed.Content != "interrupted" {
+		t.Fatalf("claimed content = %q, want %q", claimed.Content, "interrupted")
+	}
+
+	// While a turn holds the claim, another claim sees nothing to do.
+	if _, err := inbox1.ClaimBackground(ctx); !errors.Is(err, sql.ErrNoRows) {
+		t.Fatalf("second claim error = %v, want sql.ErrNoRows", err)
+	}
+
+	// A restart drops the claim left behind by the killed turn, so the trigger
+	// is retried instead of being lost.
+	db1.Close()
+
+	inbox2 := newTestInboxWithDB(ctx, t, newTestDBAt(ctx, t, dbPath))
+
+	recovered, err := inbox2.ClaimBackground(ctx)
+	must(t, err)
+
+	if recovered.Content != "interrupted" {
+		t.Errorf("recovered content = %q, want %q", recovered.Content, "interrupted")
 	}
 }
 

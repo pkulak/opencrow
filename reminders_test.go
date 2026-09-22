@@ -35,7 +35,7 @@ func TestDispatchDueReminders(t *testing.T) {
 	dispatchDueReminders(ctx, w)
 
 	// Due reminder should now be a trigger item in the inbox.
-	item, err := inbox.DequeueBackground(ctx)
+	item, err := inbox.ClaimBackground(ctx)
 	if err != nil {
 		t.Fatalf("expected one inbox item, got error: %v", err)
 	}
@@ -49,6 +49,8 @@ func TestDispatchDueReminders(t *testing.T) {
 	}
 
 	// Inbox should now be empty (future reminder not dispatched).
+	must(t, inbox.Complete(ctx, item.ID))
+
 	if n, _ := inbox.Count(ctx); n != 0 {
 		t.Errorf("inbox count = %d, want 0", n)
 	}
@@ -91,7 +93,7 @@ func TestDispatchRecurringReminders(t *testing.T) {
 
 	dispatchRecurringReminders(ctx, w, now)
 
-	item, err := inbox.DequeueBackground(ctx)
+	item, err := inbox.ClaimBackground(ctx)
 	if err != nil {
 		t.Fatalf("expected one inbox item, got error: %v", err)
 	}
@@ -107,6 +109,8 @@ func TestDispatchRecurringReminders(t *testing.T) {
 			t.Errorf("content %q does not contain %q", item.Content, want)
 		}
 	}
+
+	must(t, inbox.Complete(ctx, item.ID))
 
 	if n, _ := inbox.Count(ctx); n != 0 {
 		t.Errorf("inbox count = %d, want 0", n)
@@ -147,7 +151,7 @@ func TestDispatchRecurringRemindersCapsInbox(t *testing.T) {
 	}
 
 	for i := int64(1); i <= recurringInboxLimit; i++ {
-		item, err := inbox.DequeueBackground(ctx)
+		item, err := inbox.ClaimBackground(ctx)
 		if err != nil {
 			t.Fatal(err)
 		}
@@ -181,7 +185,7 @@ func TestDispatchRecurringRemindersIgnoresChatBacklog(t *testing.T) {
 
 	dispatchRecurringReminders(ctx, w, now)
 
-	item, err := inbox.DequeueBackground(ctx)
+	item, err := inbox.ClaimBackground(ctx)
 	if err != nil {
 		t.Fatalf("expected recurring reminder despite chat backlog: %v", err)
 	}

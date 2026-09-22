@@ -30,6 +30,7 @@ CREATE TABLE IF NOT EXISTS inbox (
     conversation_id TEXT    NOT NULL DEFAULT '',  -- Matrix room ID for routing replies
     message_id      TEXT    NOT NULL DEFAULT '',  -- incoming Matrix event ID
     is_group        BOOLEAN NOT NULL DEFAULT FALSE,
+    claimed_at      TEXT    NOT NULL DEFAULT '',  -- set while a background worker is handling a trigger
     created_at      TEXT    NOT NULL DEFAULT (strftime('%Y-%m-%dT%H:%M:%fZ', 'now'))
 );
 

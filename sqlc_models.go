@@ -17,6 +17,7 @@ type Inbox struct {
 	ConversationID string
 	MessageID      string
 	IsGroup        bool
+	ClaimedAt      string
 	CreatedAt      string
 }
 

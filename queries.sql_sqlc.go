@@ -9,6 +9,52 @@ import (
 	"context"
 )
 
+const claimBackgroundInbox = `-- name: ClaimBackgroundInbox :one
+UPDATE inbox
+SET claimed_at = strftime('%Y-%m-%dT%H:%M:%fZ', 'now')
+WHERE id = (
+    SELECT id FROM inbox
+    WHERE source = 'trigger' AND claimed_at = ''
+    ORDER BY priority ASC, id ASC
+    LIMIT 1
+)
+RETURNING id, priority, source, content, reply_to, conversation_id,
+          message_id, is_group, claimed_at, created_at
+`
+
+// Claims the oldest pending trigger by stamping claimed_at. The row stays in
+// the inbox until the turn finishes so a crash or restart can recover it; see
+// ResetClaimedTriggers.
+func (q *Queries) ClaimBackgroundInbox(ctx context.Context) (Inbox, error) {
+	row := q.db.QueryRowContext(ctx, claimBackgroundInbox)
+	var i Inbox
+	err := row.Scan(
+		&i.ID,
+		&i.Priority,
+		&i.Source,
+		&i.Content,
+		&i.ReplyTo,
+		&i.ConversationID,
+		&i.MessageID,
+		&i.IsGroup,
+		&i.ClaimedAt,
+		&i.CreatedAt,
+	)
+	return i, err
+}
+
+const completeInbox = `-- name: CompleteInbox :execrows
+DELETE FROM inbox WHERE id = ?
+`
+
+func (q *Queries) CompleteInbox(ctx context.Context, id int64) (int64, error) {
+	result, err := q.db.ExecContext(ctx, completeInbox, id)
+	if err != nil {
+		return 0, err
+	}
+	return result.RowsAffected()
+}
+
 const countBackgroundInbox = `-- name: CountBackgroundInbox :one
 SELECT count(*) FROM inbox WHERE source = 'trigger'
 `
@@ -101,35 +147,6 @@ func (q *Queries) DeleteVoiceInbox(ctx context.Context, messageID string) (int64
 	return result.RowsAffected()
 }
 
-const dequeueBackgroundInbox = `-- name: DequeueBackgroundInbox :one
-DELETE FROM inbox
-WHERE id = (
-    SELECT id FROM inbox
-    WHERE source = 'trigger'
-    ORDER BY priority ASC, id ASC
-    LIMIT 1
-)
-RETURNING id, priority, source, content, reply_to, conversation_id,
-          message_id, is_group, created_at
-`
-
-func (q *Queries) DequeueBackgroundInbox(ctx context.Context) (Inbox, error) {
-	row := q.db.QueryRowContext(ctx, dequeueBackgroundInbox)
-	var i Inbox
-	err := row.Scan(
-		&i.ID,
-		&i.Priority,
-		&i.Source,
-		&i.Content,
-		&i.ReplyTo,
-		&i.ConversationID,
-		&i.MessageID,
-		&i.IsGroup,
-		&i.CreatedAt,
-	)
-	return i, err
-}
-
 const dequeueChatInbox = `-- name: DequeueChatInbox :one
 DELETE FROM inbox
 WHERE id = (
@@ -139,7 +156,7 @@ WHERE id = (
     LIMIT 1
 )
 RETURNING id, priority, source, content, reply_to, conversation_id,
-          message_id, is_group, created_at
+          message_id, is_group, claimed_at, created_at
 `
 
 func (q *Queries) DequeueChatInbox(ctx context.Context) (Inbox, error) {
@@ -154,6 +171,7 @@ func (q *Queries) DequeueChatInbox(ctx context.Context) (Inbox, error) {
 		&i.ConversationID,
 		&i.MessageID,
 		&i.IsGroup,
+		&i.ClaimedAt,
 		&i.CreatedAt,
 	)
 	return i, err
@@ -168,7 +186,7 @@ WHERE id = (
     LIMIT 1
 )
 RETURNING id, priority, source, content, reply_to, conversation_id,
-          message_id, is_group, created_at
+          message_id, is_group, claimed_at, created_at
 `
 
 func (q *Queries) DequeueVoiceInbox(ctx context.Context) (Inbox, error) {
@@ -183,6 +201,7 @@ func (q *Queries) DequeueVoiceInbox(ctx context.Context) (Inbox, error) {
 		&i.ConversationID,
 		&i.MessageID,
 		&i.IsGroup,
+		&i.ClaimedAt,
 		&i.CreatedAt,
 	)
 	return i, err
@@ -313,6 +332,21 @@ func (q *Queries) ListRecurringReminders(ctx context.Context) ([]RecurringRemind
 		return nil, err
 	}
 	return items, nil
+}
+
+const resetClaimedTriggers = `-- name: ResetClaimedTriggers :execrows
+UPDATE inbox SET claimed_at = '' WHERE source = 'trigger' AND claimed_at != ''
+`
+
+// A trigger is claimed while a background turn handles it. No turn can survive
+// a restart, so any claim left at startup belongs to a dead run and must be
+// retried.
+func (q *Queries) ResetClaimedTriggers(ctx context.Context) (int64, error) {
+	result, err := q.db.ExecContext(ctx, resetClaimedTriggers)
+	if err != nil {
+		return 0, err
+	}
+	return result.RowsAffected()
 }
 
 const upsertOutbox = `-- name: UpsertOutbox :exec

@@ -774,7 +774,7 @@ func TestInbox_ConversationID(t *testing.T) {
 		t.Fatal(err)
 	}
 
-	item2, err := inbox.DequeueBackground(ctx)
+	item2, err := inbox.ClaimBackground(ctx)
 	if err != nil {
 		t.Fatal(err)
 	}

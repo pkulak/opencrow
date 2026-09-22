@@ -286,7 +286,7 @@ func (w *Worker) StartIdleReaper(ctx context.Context) {
 
 func (w *Worker) dequeue(ctx context.Context) (Inbox, error) {
 	if w.background {
-		return w.inbox.DequeueBackground(ctx)
+		return w.inbox.ClaimBackground(ctx)
 	}
 
 	if w.voice {
@@ -339,6 +339,17 @@ func (w *Worker) processItem(ctx context.Context, item Inbox) bool {
 		w.currentItemID = ""
 		w.mu.Unlock()
 	}()
+
+	// A trigger row stays claimed in the inbox until its turn ends, so a crash
+	// mid-turn leaves it for ResetClaimedTriggers to recover. Delete it here for
+	// every non-crash outcome.
+	if item.Source == sourceTrigger {
+		defer func() { //nolint:contextcheck // completion must outlive turn cancellation
+			if err := w.inbox.Complete(context.Background(), item.ID); err != nil {
+				slog.Error("worker: failed to complete trigger", "id", item.ID, "error", err)
+			}
+		}()
+	}
 
 	var stopDraining bool
 

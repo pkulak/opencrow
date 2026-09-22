@@ -237,6 +237,7 @@ func migrateInboxMessageMetadata(ctx context.Context, db *sql.DB) error {
 	}{
 		{"message_id", `ALTER TABLE inbox ADD COLUMN message_id TEXT NOT NULL DEFAULT ''`},
 		{"is_group", `ALTER TABLE inbox ADD COLUMN is_group BOOLEAN NOT NULL DEFAULT FALSE`},
+		{"claimed_at", `ALTER TABLE inbox ADD COLUMN claimed_at TEXT NOT NULL DEFAULT ''`},
 	}
 
 	for _, column := range columns {
