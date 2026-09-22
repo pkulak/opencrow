@@ -90,6 +90,30 @@ func newBlockedFakePiWorker(t *testing.T) *Worker {
 	return w
 }
 
+func newBlockedBackgroundPiWorker(t *testing.T, inbox *InboxStore) *Worker {
+	t.Helper()
+
+	stateDir := t.TempDir()
+
+	script, err := filepath.Abs("testdata/fake-pi")
+	if err != nil {
+		t.Fatal(err)
+	}
+
+	w := NewBackgroundWorker(inbox, PiConfig{
+		BinaryPath: "bash",
+		BinaryArgs: []string{script, "--never-read"},
+		SessionDir: filepath.Join(stateDir, "background"),
+		StateDir:   stateDir,
+		WorkingDir: stateDir,
+	}, "")
+	w.SetMatrix(stubMatrix{})
+	w.SetRoomID("room")
+	t.Cleanup(w.stopPi)
+
+	return w
+}
+
 func TestInjectTimestamp(t *testing.T) {
 	t.Parallel()
 
@@ -483,26 +507,9 @@ func TestWorker_BackgroundProviderFailureIsSilent(t *testing.T) {
 func TestWorker_BackgroundShutdownKeepsTriggerClaimed(t *testing.T) {
 	t.Parallel()
 
-	stateDir := t.TempDir()
-
-	script, err := filepath.Abs("testdata/fake-pi")
-	if err != nil {
-		t.Fatal(err)
-	}
-
 	db := newTestDB(t.Context(), t)
 	inbox := newTestInboxWithDB(t.Context(), t, db)
-
-	w := NewBackgroundWorker(inbox, PiConfig{
-		BinaryPath: "bash",
-		BinaryArgs: []string{script, "--never-read"},
-		SessionDir: filepath.Join(stateDir, "background"),
-		StateDir:   stateDir,
-		WorkingDir: stateDir,
-	}, "")
-	w.SetMatrix(stubMatrix{})
-	w.SetRoomID("room")
-	t.Cleanup(w.stopPi)
+	w := newBlockedBackgroundPiWorker(t, inbox)
 
 	must(t, inbox.Enqueue(t.Context(), PriorityTrigger, sourceTrigger, "interrupt-me", "", ""))
 
@@ -517,9 +524,9 @@ func TestWorker_BackgroundShutdownKeepsTriggerClaimed(t *testing.T) {
 		close(done)
 	}()
 
-	time.Sleep(100 * time.Millisecond)
+	waitForWorkerActive(t, w)
 	cancel()
-	<-done
+	waitForSignal(t, done, "background worker did not stop during shutdown")
 
 	// The cancelled turn must leave the row claimed, not delete it like a
 	// completed turn.
@@ -537,6 +544,62 @@ func TestWorker_BackgroundShutdownKeepsTriggerClaimed(t *testing.T) {
 
 	if recovered.ID != item.ID {
 		t.Errorf("recovered id = %d, want %d", recovered.ID, item.ID)
+	}
+}
+
+func TestWorker_BackgroundExplicitCancellationCompletesTrigger(t *testing.T) {
+	t.Parallel()
+
+	tests := []struct {
+		name   string
+		cancel func(*Worker) bool
+	}{
+		{name: "abort", cancel: (*Worker).Abort},
+		{name: "restart", cancel: func(w *Worker) bool {
+			w.Restart()
+
+			return true
+		}},
+	}
+
+	for _, tc := range tests {
+		t.Run(tc.name, func(t *testing.T) {
+			t.Parallel()
+
+			db := newTestDB(t.Context(), t)
+			inbox := newTestInboxWithDB(t.Context(), t, db)
+			w := newBlockedBackgroundPiWorker(t, inbox)
+
+			must(t, inbox.Enqueue(t.Context(), PriorityTrigger, sourceTrigger, "cancel-me", "", ""))
+
+			item, err := inbox.ClaimBackground(t.Context())
+			must(t, err)
+
+			done := make(chan struct{})
+
+			go func() {
+				w.processItem(t.Context(), item)
+				close(done)
+			}()
+
+			waitForWorkerActive(t, w)
+
+			if !tc.cancel(w) {
+				t.Fatal("cancellation reported no active task")
+			}
+
+			waitForSignal(t, done, "explicitly cancelled background task did not stop")
+
+			if n, _ := inbox.Count(t.Context()); n != 0 {
+				t.Fatalf("inbox count after explicit cancellation = %d, want 0", n)
+			}
+
+			// Reinitializing the store must not resurrect an explicitly cancelled task.
+			restarted := newTestInboxWithDB(t.Context(), t, db)
+			if n, _ := restarted.Count(t.Context()); n != 0 {
+				t.Fatalf("inbox count after restart = %d, want 0", n)
+			}
+		})
 	}
 }
 

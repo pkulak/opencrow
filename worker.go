@@ -393,13 +393,13 @@ func (w *Worker) processItem(ctx context.Context, item Inbox) bool {
 	}()
 
 	// A trigger row stays claimed in the inbox until its turn ends, so a crash
-	// mid-turn leaves it for ResetClaimedTriggers to recover. Delete it here for
-	// every non-crash outcome, but never on cancellation: a cancelled turn
-	// (usually shutdown) did not finish, so keep the claim for the next start.
+	// mid-turn leaves it for ResetClaimedTriggers to recover. Preserve the claim
+	// only when the worker itself is shutting down; an explicit abort or restart
+	// cancels itemCtx while the parent ctx remains live and should drop the task.
 	if item.Source == sourceTrigger {
 		defer func() {
-			if itemCtx.Err() != nil {
-				slog.Warn("worker: trigger left claimed after cancellation", "id", item.ID)
+			if ctx.Err() != nil {
+				slog.Warn("worker: trigger left claimed during shutdown", "id", item.ID)
 
 				return
 			}
