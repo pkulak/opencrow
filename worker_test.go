@@ -480,6 +480,66 @@ func TestWorker_BackgroundProviderFailureIsSilent(t *testing.T) {
 	}
 }
 
+func TestWorker_BackgroundShutdownKeepsTriggerClaimed(t *testing.T) {
+	t.Parallel()
+
+	stateDir := t.TempDir()
+
+	script, err := filepath.Abs("testdata/fake-pi")
+	if err != nil {
+		t.Fatal(err)
+	}
+
+	db := newTestDB(t.Context(), t)
+	inbox := newTestInboxWithDB(t.Context(), t, db)
+
+	w := NewBackgroundWorker(inbox, PiConfig{
+		BinaryPath: "bash",
+		BinaryArgs: []string{script, "--never-read"},
+		SessionDir: filepath.Join(stateDir, "background"),
+		StateDir:   stateDir,
+		WorkingDir: stateDir,
+	}, "")
+	w.SetMatrix(stubMatrix{})
+	w.SetRoomID("room")
+	t.Cleanup(w.stopPi)
+
+	must(t, inbox.Enqueue(t.Context(), PriorityTrigger, sourceTrigger, "interrupt-me", "", ""))
+
+	item, err := inbox.ClaimBackground(t.Context())
+	must(t, err)
+
+	ctx, cancel := context.WithCancel(t.Context())
+	done := make(chan struct{})
+
+	go func() {
+		w.processItem(ctx, item)
+		close(done)
+	}()
+
+	time.Sleep(100 * time.Millisecond)
+	cancel()
+	<-done
+
+	// The cancelled turn must leave the row claimed, not delete it like a
+	// completed turn.
+	if n, _ := inbox.Count(t.Context()); n != 1 {
+		t.Fatalf("inbox count after shutdown = %d, want 1 (trigger must survive)", n)
+	}
+
+	// A restart clears the claim and hands the trigger back for another attempt.
+	restarted := newTestInboxWithDB(t.Context(), t, db)
+
+	recovered, err := restarted.ClaimBackground(t.Context())
+	if err != nil {
+		t.Fatalf("expected recovered trigger, got %v", err)
+	}
+
+	if recovered.ID != item.ID {
+		t.Errorf("recovered id = %d, want %d", recovered.ID, item.ID)
+	}
+}
+
 func TestWorker_BackgroundToolCallsAreSilent(t *testing.T) {
 	t.Parallel()
 
