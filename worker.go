@@ -270,18 +270,70 @@ func (w *Worker) StartIdleReaper(ctx context.Context) {
 			case <-ctx.Done():
 				return
 			case <-ticker.C:
-				w.mu.Lock()
-				processing := w.currentCancel != nil
-				idle := !processing && w.pi != nil && w.pi.IsAlive() && time.Since(w.lastUse) > w.piCfg.IdleTimeout
-				w.mu.Unlock()
-
-				if idle {
-					slog.Info("worker: reaping idle pi process")
-					w.stopPi()
-				}
+				w.reapIfIdle(ctx)
 			}
 		}
 	}()
+}
+
+// compactIdleMinTokens is the context size below which compacting an idle
+// session costs more than it saves. Compaction spends a summarization call to
+// shrink a context that only matters if the session is resumed. A zero count
+// means pi could not report usage, so this compacts anyway rather than skip.
+const compactIdleMinTokens = 32_000
+
+// reapIfIdle compacts and then stops an idle pi process. Compaction is
+// opportunistic: a failure still reaps, and the idle condition is re-checked
+// after compaction so a message that arrives mid-summary keeps the process up.
+func (w *Worker) reapIfIdle(ctx context.Context) {
+	if !w.isIdle() {
+		return
+	}
+
+	if w.piCfg.CompactOnIdle {
+		w.compactIdleSession(ctx)
+	}
+
+	if !w.isIdle() {
+		return
+	}
+
+	slog.Info("worker: reaping idle pi process")
+	w.stopPi()
+}
+
+func (w *Worker) isIdle() bool {
+	w.mu.Lock()
+	defer w.mu.Unlock()
+
+	return w.currentCancel == nil && w.pi != nil && w.pi.IsAlive() && time.Since(w.lastUse) > w.piCfg.IdleTimeout
+}
+
+func (w *Worker) compactIdleSession(ctx context.Context) {
+	w.mu.Lock()
+	pi := w.pi
+	w.mu.Unlock()
+
+	if pi == nil || !pi.IsAlive() {
+		return
+	}
+
+	tokens, err := pi.ContextTokens(ctx)
+	if err != nil {
+		slog.Warn("worker: idle session stats failed", "error", err)
+
+		return
+	}
+
+	if tokens != 0 && tokens < compactIdleMinTokens {
+		return
+	}
+
+	slog.Info("worker: compacting idle session", "tokens", tokens)
+
+	if _, err := w.Compact(ctx); err != nil {
+		slog.Warn("worker: idle compaction failed", "error", err)
+	}
 }
 
 func (w *Worker) dequeue(ctx context.Context) (Inbox, error) {

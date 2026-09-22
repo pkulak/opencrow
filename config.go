@@ -54,6 +54,9 @@ type PiConfig struct {
 	Skills        []string
 	ShowToolCalls bool // OPENCROW_SHOW_TOOL_CALLS — relay tool_execution_start events to chat
 	DebugTiming   bool // OPENCROW_DEBUG_TIMING — append timing info to each reply
+	// CompactOnIdle compacts a session before the idle reaper kills its pi
+	// process, so the on-disk session is smaller the next time it resumes.
+	CompactOnIdle bool // OPENCROW_PI_COMPACT_ON_IDLE
 	// NoContinue suppresses --continue when spawning pi. Background work sets
 	// this: each trigger gets a fresh session via new_session, so resuming the
 	// previous run's file would only load context that is about to be discarded.
@@ -155,6 +158,7 @@ func loadPiConfig(env envReader, workingDir string, idleTimeout time.Duration, s
 		Skills:        skills,
 		ShowToolCalls: env.bool("OPENCROW_SHOW_TOOL_CALLS"),
 		DebugTiming:   env.bool("OPENCROW_DEBUG_TIMING"),
+		CompactOnIdle: env.bool("OPENCROW_PI_COMPACT_ON_IDLE"),
 		DefaultRoomID: env.str("OPENCROW_MATRIX_ROOM_ID"),
 	}
 }
@@ -166,6 +170,9 @@ func loadBackgroundPiConfig(env envReader, workingDir string, idleTimeout time.D
 	// in the NixOS containers /tmp is a bind mount of the state dir's tmp/.
 	cfg.SessionDir = env.or("OPENCROW_BACKGROUND_PI_SESSION_DIR", filepath.Join(os.TempDir(), "opencrow-background"))
 	cfg.NoContinue = true
+	// Background context is one turn; the idle reaper would only waste a
+	// summarization call compacting it.
+	cfg.CompactOnIdle = false
 	cfg.Provider = env.or("OPENCROW_BACKGROUND_PI_PROVIDER", cfg.Provider)
 	cfg.Model = env.or("OPENCROW_BACKGROUND_PI_MODEL", cfg.Model)
 

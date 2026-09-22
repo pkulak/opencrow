@@ -663,6 +663,81 @@ func TestBackgroundWorker_ResetsSessionBeforeEachTrigger(t *testing.T) {
 	}
 }
 
+func TestWorker_IdleReapCompaction(t *testing.T) {
+	t.Parallel()
+
+	tests := []struct {
+		name          string
+		tokens        string
+		wantCompacted bool
+	}{
+		{name: "large session compacted", tokens: "40000", wantCompacted: true},
+		{name: "unknown token count compacted", tokens: "0", wantCompacted: true},
+		{name: "small session skipped", tokens: "1000", wantCompacted: false},
+	}
+
+	for _, tc := range tests {
+		t.Run(tc.name, func(t *testing.T) {
+			t.Parallel()
+
+			w := newFakePiWorker(t)
+			w.piCfg.CompactOnIdle = true
+			w.piCfg.IdleTimeout = time.Second
+
+			ctx, cancel := context.WithCancel(t.Context())
+			t.Cleanup(cancel)
+
+			go w.Run(ctx)
+
+			if _, _, err := w.sendWithRetry(ctx, "hello", nil); err != nil {
+				t.Fatalf("sendWithRetry: %v", err)
+			}
+
+			if err := os.WriteFile(filepath.Join(w.piCfg.StateDir, "context_tokens"), []byte(tc.tokens), 0o600); err != nil {
+				t.Fatal(err)
+			}
+
+			w.forceIdle()
+			w.reapIfIdle(ctx)
+
+			want := 0
+			if tc.wantCompacted {
+				want = 1
+			}
+
+			if got := compactCount(t, w); got != want {
+				t.Errorf("compact count = %d, want %d", got, want)
+			}
+
+			if w.IsActive() {
+				t.Error("pi still active after idle reap")
+			}
+		})
+	}
+}
+
+func (w *Worker) forceIdle() {
+	w.mu.Lock()
+	w.lastUse = time.Now().Add(-2 * w.piCfg.IdleTimeout)
+	w.mu.Unlock()
+}
+
+// compactCount counts the "compact" requests fake-pi has recorded.
+func compactCount(t *testing.T, w *Worker) int {
+	t.Helper()
+
+	data, err := os.ReadFile(filepath.Join(w.piCfg.StateDir, "compact.log"))
+	if errors.Is(err, os.ErrNotExist) {
+		return 0
+	}
+
+	if err != nil {
+		t.Fatal(err)
+	}
+
+	return strings.Count(string(data), "compact")
+}
+
 func TestBackgroundWorker_RestartDuringStartupStartsFreshSession(t *testing.T) {
 	t.Parallel()
 

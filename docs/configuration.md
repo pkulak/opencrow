@@ -28,6 +28,7 @@ Send these as plain text messages in any conversation with the bot:
 | `OPENCROW_PI_MODEL` | `claude-opus-4-6` | Model name |
 | `OPENCROW_PI_WORKING_DIR` | `/var/lib/opencrow` | Working directory for pi |
 | `OPENCROW_PI_IDLE_TIMEOUT` | `30m` | Kill pi after this duration of inactivity |
+| `OPENCROW_PI_COMPACT_ON_IDLE` | `false` | Compact an idle session before the reaper kills its pi process when it has at least 32k context tokens or an unknown token count. Background work ignores this. |
 | `OPENCROW_PI_SYSTEM_PROMPT` | built-in | Custom system prompt |
 | `OPENCROW_SOUL_FILE` | _(empty)_ | Path to a file containing the system prompt (overrides `OPENCROW_PI_SYSTEM_PROMPT`) |
 | `OPENCROW_PI_SKILLS` | _(empty)_ | Comma-separated skill directory paths |

@@ -127,6 +127,55 @@ func (p *PiProcess) NewSession(ctx context.Context) error {
 	return p.waitForNewSessionResponse(ctx)
 }
 
+// ContextTokens returns pi's current context-window token estimate from
+// get_session_stats, or 0 when no model or estimate is available. The idle
+// reaper uses it to decide whether a session is worth compacting.
+func (p *PiProcess) ContextTokens(ctx context.Context) (int, error) { //nolint:cyclop // protocol response parsing is necessarily branchy
+	if !p.IsAlive() {
+		return 0, errors.New("pi process is not alive")
+	}
+
+	defer p.closeStdinOnCancel(ctx)()
+
+	if err := p.sendCommand(map[string]string{"type": "get_session_stats"}); err != nil {
+		return 0, err
+	}
+
+	var tokens int
+
+	err := p.drainEvents(ctx, func(evt rpcEvent) (bool, error) {
+		if evt.Type != rpcTypeResponse || evt.Command != "get_session_stats" {
+			return false, nil
+		}
+
+		var data struct {
+			ContextUsage *struct {
+				Tokens *int `json:"tokens"`
+			} `json:"contextUsage"` //nolint:tagliatelle // pi protocol uses camelCase
+		}
+		if len(evt.Data) > 0 {
+			if err := json.Unmarshal(evt.Data, &data); err != nil {
+				return false, fmt.Errorf("parsing session stats: %w", err)
+			}
+		}
+
+		if data.ContextUsage != nil && data.ContextUsage.Tokens != nil {
+			tokens = *data.ContextUsage.Tokens
+		}
+
+		return true, nil
+	})
+	if err != nil {
+		if ctx.Err() != nil {
+			return 0, fmt.Errorf("context cancelled: %w", ctx.Err())
+		}
+
+		return 0, err
+	}
+
+	return tokens, nil
+}
+
 // sendAndWait sends a prompt command and waits for the agent to finish.
 // The caller must ensure only one goroutine calls this at a time. Tool calls
 // made during this prompt are forwarded to onToolCall when non-nil.

@@ -68,7 +68,12 @@ while IFS= read -r line; do
       printf '%s\n' '{"type":"agent_end","messages":[{"role":"assistant","content":[{"type":"text","text":"ok"}],"stopReason":"end_turn"}]}'
       ;;
     *'"type":"compact"'*|*'"type": "compact"'*)
+      printf '%s\n' 'compact' >> "$OPENCROW_SESSION_DIR/compact.log"
       printf '%s\n' '{"type":"response","command":"compact","success":true,"data":{"tokensBefore":1,"summary":"s"}}'
+      ;;
+    *'"type":"get_session_stats"'*|*'"type": "get_session_stats"'*)
+      tokens=$(cat "$OPENCROW_SESSION_DIR/context_tokens" 2>/dev/null || echo 0)
+      printf '%s\n' "{\"type\":\"response\",\"command\":\"get_session_stats\",\"success\":true,\"data\":{\"contextUsage\":{\"tokens\":$tokens,\"contextWindow\":200000,\"percent\":10}}}"
       ;;
     *'"type":"new_session"'*|*'"type": "new_session"'*)
       printf '%s\n' 'new_session' >> "$OPENCROW_SESSION_DIR/new_session.log"

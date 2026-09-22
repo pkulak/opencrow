@@ -81,6 +81,26 @@ func TestLoadConfig_BackgroundPiOverrides(t *testing.T) {
 	}
 }
 
+func TestLoadConfig_CompactOnIdle(t *testing.T) {
+	t.Parallel()
+
+	env := baseMatrixEnv()
+	env["OPENCROW_PI_COMPACT_ON_IDLE"] = "true"
+
+	cfg, err := loadConfig(testEnv(env))
+	if err != nil {
+		t.Fatal(err)
+	}
+
+	if !cfg.Pi.CompactOnIdle {
+		t.Error("chat CompactOnIdle = false, want true")
+	}
+
+	if cfg.BackgroundPi.CompactOnIdle {
+		t.Error("background CompactOnIdle = true, want false")
+	}
+}
+
 func TestLoadConfig_VoiceInheritsChatConfig(t *testing.T) {
 	t.Parallel()
 
