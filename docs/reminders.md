@@ -27,14 +27,16 @@ Canceling or reaching the optional inclusive end time deletes a recurring series
 
 ## Background session
 
-Reminders and trigger-pipe events use a shared, resumable background Pi session. It is independent from the chat session but has the same working directory, tools, skills, and system prompt. Set these optional overrides to use a cheaper model for background work:
+Reminders and trigger-pipe events share one background Pi process, but every run starts with empty context: OpenCrow resets the session before each trigger. The background session is independent from chat and has the same working directory, tools, skills, and system prompt. Set these optional overrides to use a cheaper model for background work:
 
 - `OPENCROW_BACKGROUND_PI_PROVIDER`
 - `OPENCROW_BACKGROUND_PI_MODEL`
 
 Each falls back to its `OPENCROW_PI_*` equivalent. Background tool calls and infrastructure errors are logged rather than sent to Matrix. Normal replies still go to Matrix; `NO_REPLY` remains silent.
 
-Use `!background-stop` to abort the active background task, or `!background-restart` to discard its current session before the next task. Both leave chat and queued reminders alone.
+Each run is written to its own session file under a temp directory (`OPENCROW_BACKGROUND_PI_SESSION_DIR`, default `<tmpdir>/opencrow-background`). Because the context resets per run, a file contains just that run, which makes recent runs easy to inspect. The files are disposable and age out with normal `/tmp` cleanup (about ten days). In the NixOS container `/tmp` is a bind mount of the state directory's `tmp/`, so the files are visible on the host and the `session -b` helper opens the most recent run.
+
+Use `!background-stop` to abort the active background task. `!background-restart` kills the background process; the next task would start fresh anyway. Both leave chat and queued reminders alone.
 
 ## Trigger pipe
 

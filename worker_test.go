@@ -638,6 +638,31 @@ func TestWorker_RunStopsPiBlockedOnStdin(t *testing.T) {
 	waitForSignal(t, done, "worker shutdown blocked on Pi stdin")
 }
 
+// Each background trigger must start from an empty session. The worker resets
+// the session before every trigger prompt so context does not leak between runs.
+func TestBackgroundWorker_ResetsSessionBeforeEachTrigger(t *testing.T) {
+	t.Parallel()
+
+	w := newFakeBackgroundPiWorker(t)
+
+	db := newTestDB(t.Context(), t)
+	app := NewApp(&mockMatrix{}, w, newTestInboxWithDB(t.Context(), t, db), db)
+	w.SetApp(app)
+
+	for range 2 {
+		w.processItem(t.Context(), Inbox{Source: sourceTrigger, Content: "ok"})
+	}
+
+	data, err := os.ReadFile(filepath.Join(w.piCfg.StateDir, "new_session.log"))
+	if err != nil {
+		t.Fatalf("reading new_session log: %v", err)
+	}
+
+	if got := strings.Count(string(data), "new_session"); got != 2 {
+		t.Errorf("new_session count = %d, want 2", got)
+	}
+}
+
 func TestBackgroundWorker_RestartDuringStartupStartsFreshSession(t *testing.T) {
 	t.Parallel()
 

@@ -13,7 +13,7 @@ Send these as plain text messages in any conversation with the bot:
 | `!skills` | List the skills loaded for this bot instance |
 | `!verify` | Set up cross-signing so the bot's device shows as verified |
 | `!background-stop` | Abort the active background task |
-| `!background-restart` | Start a fresh background session on the next task |
+| `!background-restart` | Kill the background Pi process (each task already starts fresh) |
 | `!voice-stop` | Abort the active HTTP voice turn |
 | `!voice-restart` | Clear pending voice turns and start a fresh voice session on the next request |
 | `!voice-compact` | Compact the active voice session |
@@ -110,7 +110,13 @@ influence the agent's context or send it attachments.
 `OPENCROW_BACKGROUND_PI_PROVIDER` and `OPENCROW_BACKGROUND_PI_MODEL` optionally
 override the provider and model used for reminders and external triggers. Each
 falls back to the corresponding `OPENCROW_PI_*` setting. Background work keeps
-its own Pi session but shares the normal working directory, tools, and skills.
+its own Pi process but shares the normal working directory, tools, and skills,
+and resets the session before every run so each trigger starts with empty
+context.
+
+Background session files live in `OPENCROW_BACKGROUND_PI_SESSION_DIR`, which
+defaults to `<tmpdir>/opencrow-background`. They are disposable and age out with
+normal `/tmp` cleanup.
 
 When the HTTP listener is enabled, voice turns use another Pi session under
 `<OPENCROW_PI_SESSION_DIR>/voice`. The voice worker inherits the chat provider,

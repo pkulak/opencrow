@@ -395,6 +395,10 @@ func (w *Worker) processPrompt(ctx context.Context, item Inbox) bool {
 	}
 	defer stopTyping(context.Background()) //nolint:contextcheck // must clear typing after cancellation
 
+	if item.Source == sourceTrigger {
+		w.resetTriggerSession(ctx)
+	}
+
 	onToolCall := w.toolCallHandler(ctx, item, convID)
 	taskStart := time.Now()
 
@@ -433,6 +437,27 @@ func (w *Worker) processPrompt(ctx context.Context, item Inbox) bool {
 	w.app.sendReplyWithFiles(ctx, convID, reply, replyToID, !w.background, w.background)
 
 	return false
+}
+
+// resetTriggerSession discards any context left over from a previous
+// background turn so each trigger starts clean. Pi stays alive — new_session
+// only swaps the in-memory session, so no process restart and no latency. If
+// the reset fails, stop the process so the next prompt spawns a fresh one
+// instead of reusing stale context.
+func (w *Worker) resetTriggerSession(ctx context.Context) {
+	pi, err := w.ensurePi(ctx)
+	if err == nil {
+		err = pi.NewSession(ctx)
+	}
+
+	if err != nil {
+		if ctx.Err() != nil {
+			return
+		}
+
+		slog.Warn("worker: failed to reset trigger session, restarting pi", "error", err)
+		w.stopPi()
+	}
 }
 
 func (w *Worker) processVoicePrompt(ctx context.Context, item Inbox) {

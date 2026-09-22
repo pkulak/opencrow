@@ -54,6 +54,10 @@ type PiConfig struct {
 	Skills        []string
 	ShowToolCalls bool // OPENCROW_SHOW_TOOL_CALLS — relay tool_execution_start events to chat
 	DebugTiming   bool // OPENCROW_DEBUG_TIMING — append timing info to each reply
+	// NoContinue suppresses --continue when spawning pi. Background work sets
+	// this: each trigger gets a fresh session via new_session, so resuming the
+	// previous run's file would only load context that is about to be discarded.
+	NoContinue bool
 	// DefaultRoomID is the fallback conversation ID for inbox items that
 	// have no ConversationID of their own (triggers). Takes
 	// precedence over the per-conversation SetRoomID mechanism.
@@ -157,7 +161,11 @@ func loadPiConfig(env envReader, workingDir string, idleTimeout time.Duration, s
 
 func loadBackgroundPiConfig(env envReader, workingDir string, idleTimeout time.Duration, skills []string) PiConfig {
 	cfg := loadPiConfig(env, workingDir, idleTimeout, skills)
-	cfg.SessionDir = filepath.Join(cfg.StateDir, "background")
+	// Each background turn runs in its own fresh session. Keep the transcripts
+	// in a temp dir so recent runs stay debuggable but age out on their own;
+	// in the NixOS containers /tmp is a bind mount of the state dir's tmp/.
+	cfg.SessionDir = env.or("OPENCROW_BACKGROUND_PI_SESSION_DIR", filepath.Join(os.TempDir(), "opencrow-background"))
+	cfg.NoContinue = true
 	cfg.Provider = env.or("OPENCROW_BACKGROUND_PI_PROVIDER", cfg.Provider)
 	cfg.Model = env.or("OPENCROW_BACKGROUND_PI_MODEL", cfg.Model)
 

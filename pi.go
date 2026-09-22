@@ -210,7 +210,7 @@ func buildPiArgs(cfg PiConfig, fresh bool) []string {
 	args := append([]string(nil), cfg.BinaryArgs...)
 
 	args = append(args, "--mode", "rpc", "--session-dir", cfg.SessionDir)
-	if !fresh {
+	if !fresh && !cfg.NoContinue {
 		args = append(args, "--continue")
 	}
 

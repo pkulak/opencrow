@@ -110,6 +110,23 @@ func (p *PiProcess) Compact(ctx context.Context) (*CompactResult, error) {
 	return p.waitForCompactResponse(ctx)
 }
 
+// NewSession starts a fresh session in the same pi process, discarding the
+// accumulated conversation context. The background worker calls this before
+// each trigger so turns are isolated without paying for a process restart.
+func (p *PiProcess) NewSession(ctx context.Context) error {
+	if !p.IsAlive() {
+		return errors.New("pi process is not alive")
+	}
+
+	defer p.closeStdinOnCancel(ctx)()
+
+	if err := p.sendCommand(map[string]string{"type": "new_session"}); err != nil {
+		return err
+	}
+
+	return p.waitForNewSessionResponse(ctx)
+}
+
 // sendAndWait sends a prompt command and waits for the agent to finish.
 // The caller must ensure only one goroutine calls this at a time. Tool calls
 // made during this prompt are forwarded to onToolCall when non-nil.
@@ -453,6 +470,43 @@ func (p *PiProcess) waitForCompactResponse(ctx context.Context) (*CompactResult,
 	}
 
 	return result, nil
+}
+
+// waitForNewSessionResponse blocks until pi acknowledges new_session. A
+// response with cancelled=true means an extension vetoed the reset; surface
+// that as an error so the caller can fall back to a fresh process.
+func (p *PiProcess) waitForNewSessionResponse(ctx context.Context) error {
+	var cancelled bool
+
+	err := p.drainEvents(ctx, func(evt rpcEvent) (bool, error) {
+		if evt.Type != rpcTypeResponse || evt.Command != "new_session" {
+			return false, nil
+		}
+
+		var data struct {
+			Cancelled bool `json:"cancelled"`
+		}
+		if len(evt.Data) > 0 {
+			_ = json.Unmarshal(evt.Data, &data)
+		}
+
+		cancelled = data.Cancelled
+
+		return true, nil
+	})
+	if err != nil {
+		if ctx.Err() != nil {
+			return fmt.Errorf("context cancelled: %w", ctx.Err())
+		}
+
+		return err
+	}
+
+	if cancelled {
+		return errors.New("new session was cancelled by an extension")
+	}
+
+	return nil
 }
 
 func (p *PiProcess) autoRespondExtensionUI(evt rpcEvent) {

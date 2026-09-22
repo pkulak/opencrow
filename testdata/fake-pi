@@ -70,5 +70,9 @@ while IFS= read -r line; do
     *'"type":"compact"'*|*'"type": "compact"'*)
       printf '%s\n' '{"type":"response","command":"compact","success":true,"data":{"tokensBefore":1,"summary":"s"}}'
       ;;
+    *'"type":"new_session"'*|*'"type": "new_session"'*)
+      printf '%s\n' 'new_session' >> "$OPENCROW_SESSION_DIR/new_session.log"
+      printf '%s\n' '{"type":"response","command":"new_session","success":true,"data":{"cancelled":false}}'
+      ;;
   esac
 done

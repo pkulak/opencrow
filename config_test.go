@@ -64,8 +64,12 @@ func TestLoadConfig_BackgroundPiOverrides(t *testing.T) {
 		t.Fatal(err)
 	}
 
-	if cfg.BackgroundPi.SessionDir != "/tmp/opencrow/background" {
+	if cfg.BackgroundPi.SessionDir != filepath.Join(os.TempDir(), "opencrow-background") {
 		t.Errorf("background session dir = %q", cfg.BackgroundPi.SessionDir)
+	}
+
+	if !cfg.BackgroundPi.NoContinue {
+		t.Error("background NoContinue = false, want true")
 	}
 
 	if cfg.BackgroundPi.StateDir != "/tmp/opencrow" {
