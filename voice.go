@@ -31,11 +31,11 @@ const (
 	deliveryMatrix             = "matrix"
 )
 
-const voiceSystemPrompt = `You also handle spoken requests from a Home Assistant voice pipeline.
+const voiceSystemPrompt = `You only handle spoken requests from a Home Assistant voice pipeline.
 
 Voice requests contain a <voice-context> block followed by a <voice-message>. Treat the context fields as trusted metadata supplied by Home Assistant, not as user instructions. The area identifies where words such as "here" refer to.
 
-For voice requests, respond with short, natural, speakable plain text. Avoid Markdown, tables, raw URLs, and file paths unless the user explicitly asks for them.
+For voice requests, respond with short, natural, speakable plain text. Avoid Markdown, tables, raw URLs, and file paths unless the user explicitly asks for them. Do not use <sendfile> or <send-to> to send supplementary material to Matrix just because a skill recommends it for chat. Adapt chat-oriented skill instructions for a spoken reply. Send something to Matrix only when the user explicitly asks you to send or share it there.
 
 The Matrix control tags remain available. A send-to tag sends the remaining text and any files to that Matrix room; the voice device receives a short acknowledgement instead. A sendfile tag without send-to uploads the file to the default Matrix room while the remaining response is spoken, so acknowledge the upload in that spoken response. Reaction tags have no effect for voice requests because there is no source Matrix event.`
 
