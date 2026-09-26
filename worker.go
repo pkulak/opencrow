@@ -4,8 +4,10 @@ import (
 	"cmp"
 	"context"
 	"database/sql"
+	"encoding/json"
 	"errors"
 	"fmt"
+	"io"
 	"log/slog"
 	"net/http"
 	"os"
@@ -282,6 +284,11 @@ func (w *Worker) StartIdleReaper(ctx context.Context) {
 // means pi could not report usage, so this compacts anyway rather than skip.
 const compactIdleMinTokens = 32_000
 
+// compactIdleLimit caps how many times a session is summarized. Each summary
+// is built from the previous one, so detail degrades with every pass. The
+// reap that would make this compaction starts a fresh session instead.
+const compactIdleLimit = 7
+
 // reapIfIdle compacts and then stops an idle pi process. Compaction is
 // opportunistic: a failure still reaps, and the idle condition is re-checked
 // after compaction so a message that arrives mid-summary keeps the process up.
@@ -290,15 +297,19 @@ func (w *Worker) reapIfIdle(ctx context.Context) {
 		return
 	}
 
-	if w.piCfg.CompactOnIdle {
-		w.compactIdleSession(ctx)
-	}
+	reset := w.piCfg.CompactOnIdle && w.compactIdleSession(ctx)
 
 	if !w.isIdle() {
 		return
 	}
 
-	slog.Info("worker: reaping idle pi process")
+	if reset {
+		w.mu.Lock()
+		w.freshStart = true
+		w.mu.Unlock()
+	}
+
+	slog.Info("worker: reaping idle pi process", "fresh_session", reset)
 	w.stopPi()
 }
 
@@ -309,30 +320,80 @@ func (w *Worker) isIdle() bool {
 	return w.currentCancel == nil && w.pi != nil && w.pi.IsAlive() && time.Since(w.lastUse) > w.piCfg.IdleTimeout
 }
 
-func (w *Worker) compactIdleSession(ctx context.Context) {
+// compactIdleSession compacts an idle session, or returns true without
+// compacting when the session has reached compactIdleLimit and should be
+// replaced by a fresh one.
+func (w *Worker) compactIdleSession(ctx context.Context) bool {
 	w.mu.Lock()
 	pi := w.pi
 	w.mu.Unlock()
 
 	if pi == nil || !pi.IsAlive() {
-		return
+		return false
 	}
 
-	tokens, err := pi.ContextTokens(ctx)
+	stats, err := pi.SessionStats(ctx)
 	if err != nil {
 		slog.Warn("worker: idle session stats failed", "error", err)
 
-		return
+		return false
 	}
 
-	if tokens != 0 && tokens < compactIdleMinTokens {
-		return
+	if stats.Tokens != 0 && stats.Tokens < compactIdleMinTokens {
+		return false
 	}
 
-	slog.Info("worker: compacting idle session", "tokens", tokens)
+	compactions, err := countCompactions(stats.SessionFile)
+	if err != nil {
+		slog.Warn("worker: counting session compactions failed", "error", err)
+	} else if compactions >= compactIdleLimit-1 {
+		slog.Info("worker: idle session reached compaction limit", "compactions", compactions)
+
+		return true
+	}
+
+	slog.Info("worker: compacting idle session", "tokens", stats.Tokens, "compactions", compactions)
 
 	if _, err := w.Compact(ctx); err != nil {
 		slog.Warn("worker: idle compaction failed", "error", err)
+	}
+
+	return false
+}
+
+// countCompactions counts the compaction entries in a pi session file.
+func countCompactions(path string) (int, error) {
+	if path == "" {
+		return 0, errors.New("pi reported no session file")
+	}
+
+	f, err := os.Open(path)
+	if err != nil {
+		return 0, fmt.Errorf("opening session file: %w", err)
+	}
+	defer f.Close()
+
+	count := 0
+
+	dec := json.NewDecoder(f)
+
+	for {
+		var entry struct {
+			Type string `json:"type"`
+		}
+
+		err := dec.Decode(&entry)
+		if errors.Is(err, io.EOF) {
+			return count, nil
+		}
+
+		if err != nil {
+			return 0, fmt.Errorf("parsing %s: %w", path, err)
+		}
+
+		if entry.Type == "compaction" {
+			count++
+		}
 	}
 }
 

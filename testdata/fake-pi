@@ -73,7 +73,7 @@ while IFS= read -r line; do
       ;;
     *'"type":"get_session_stats"'*|*'"type": "get_session_stats"'*)
       tokens=$(cat "$OPENCROW_SESSION_DIR/context_tokens" 2>/dev/null || echo 0)
-      printf '%s\n' "{\"type\":\"response\",\"command\":\"get_session_stats\",\"success\":true,\"data\":{\"contextUsage\":{\"tokens\":$tokens,\"contextWindow\":200000,\"percent\":10}}}"
+      printf '%s\n' "{\"type\":\"response\",\"command\":\"get_session_stats\",\"success\":true,\"data\":{\"sessionFile\":\"$OPENCROW_SESSION_DIR/session.jsonl\",\"contextUsage\":{\"tokens\":$tokens,\"contextWindow\":200000,\"percent\":10}}}"
       ;;
     *'"type":"new_session"'*|*'"type": "new_session"'*)
       printf '%s\n' 'new_session' >> "$OPENCROW_SESSION_DIR/new_session.log"

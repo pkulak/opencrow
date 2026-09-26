@@ -127,21 +127,28 @@ func (p *PiProcess) NewSession(ctx context.Context) error {
 	return p.waitForNewSessionResponse(ctx)
 }
 
-// ContextTokens returns pi's current context-window token estimate from
-// get_session_stats, or 0 when no model or estimate is available. The idle
-// reaper uses it to decide whether a session is worth compacting.
-func (p *PiProcess) ContextTokens(ctx context.Context) (int, error) { //nolint:cyclop // protocol response parsing is necessarily branchy
+// SessionStats is the subset of get_session_stats the idle reaper uses.
+type SessionStats struct {
+	// Tokens is pi's current context-window estimate, or 0 when no model or
+	// estimate is available.
+	Tokens      int
+	SessionFile string
+}
+
+// SessionStats returns pi's current context size and session file. The idle
+// reaper uses it to decide whether a session is worth compacting or resetting.
+func (p *PiProcess) SessionStats(ctx context.Context) (SessionStats, error) { //nolint:cyclop // protocol response parsing is necessarily branchy
 	if !p.IsAlive() {
-		return 0, errors.New("pi process is not alive")
+		return SessionStats{}, errors.New("pi process is not alive")
 	}
 
 	defer p.closeStdinOnCancel(ctx)()
 
 	if err := p.sendCommand(map[string]string{"type": "get_session_stats"}); err != nil {
-		return 0, err
+		return SessionStats{}, err
 	}
 
-	var tokens int
+	var stats SessionStats
 
 	err := p.drainEvents(ctx, func(evt rpcEvent) (bool, error) {
 		if evt.Type != rpcTypeResponse || evt.Command != "get_session_stats" {
@@ -149,6 +156,7 @@ func (p *PiProcess) ContextTokens(ctx context.Context) (int, error) { //nolint:c
 		}
 
 		var data struct {
+			SessionFile  string `json:"sessionFile"` //nolint:tagliatelle // pi protocol uses camelCase
 			ContextUsage *struct {
 				Tokens *int `json:"tokens"`
 			} `json:"contextUsage"` //nolint:tagliatelle // pi protocol uses camelCase
@@ -159,21 +167,22 @@ func (p *PiProcess) ContextTokens(ctx context.Context) (int, error) { //nolint:c
 			}
 		}
 
+		stats.SessionFile = data.SessionFile
 		if data.ContextUsage != nil && data.ContextUsage.Tokens != nil {
-			tokens = *data.ContextUsage.Tokens
+			stats.Tokens = *data.ContextUsage.Tokens
 		}
 
 		return true, nil
 	})
 	if err != nil {
 		if ctx.Err() != nil {
-			return 0, fmt.Errorf("context cancelled: %w", ctx.Err())
+			return SessionStats{}, fmt.Errorf("context cancelled: %w", ctx.Err())
 		}
 
-		return 0, err
+		return SessionStats{}, err
 	}
 
-	return tokens, nil
+	return stats, nil
 }
 
 // sendAndWait sends a prompt command and waits for the agent to finish.

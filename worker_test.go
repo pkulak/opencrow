@@ -732,11 +732,16 @@ func TestWorker_IdleReapCompaction(t *testing.T) {
 	tests := []struct {
 		name          string
 		tokens        string
+		compactions   int
 		wantCompacted bool
+		wantFresh     bool
 	}{
 		{name: "large session compacted", tokens: "40000", wantCompacted: true},
 		{name: "unknown token count compacted", tokens: "0", wantCompacted: true},
 		{name: "small session skipped", tokens: "1000", wantCompacted: false},
+		{name: "sixth compaction compacted", tokens: "40000", compactions: 5, wantCompacted: true},
+		{name: "seventh compaction starts fresh", tokens: "40000", compactions: 6, wantFresh: true},
+		{name: "small session at limit skipped", tokens: "1000", compactions: 6},
 	}
 
 	for _, tc := range tests {
@@ -756,10 +761,7 @@ func TestWorker_IdleReapCompaction(t *testing.T) {
 				t.Fatalf("sendWithRetry: %v", err)
 			}
 
-			if err := os.WriteFile(filepath.Join(w.piCfg.StateDir, "context_tokens"), []byte(tc.tokens), 0o600); err != nil {
-				t.Fatal(err)
-			}
-
+			writeIdleSession(t, w, tc.tokens, tc.compactions)
 			w.forceIdle()
 			w.reapIfIdle(ctx)
 
@@ -772,10 +774,32 @@ func TestWorker_IdleReapCompaction(t *testing.T) {
 				t.Errorf("compact count = %d, want %d", got, want)
 			}
 
+			w.mu.Lock()
+			fresh := w.freshStart
+			w.mu.Unlock()
+
+			if fresh != tc.wantFresh {
+				t.Errorf("freshStart = %v, want %v", fresh, tc.wantFresh)
+			}
+
 			if w.IsActive() {
 				t.Error("pi still active after idle reap")
 			}
 		})
+	}
+}
+
+// writeIdleSession sets the context size and session file fake-pi reports.
+func writeIdleSession(t *testing.T, w *Worker, tokens string, compactions int) {
+	t.Helper()
+
+	if err := os.WriteFile(filepath.Join(w.piCfg.StateDir, "context_tokens"), []byte(tokens), 0o600); err != nil {
+		t.Fatal(err)
+	}
+
+	session := `{"type":"session"}` + "\n" + strings.Repeat(`{"type":"compaction"}`+"\n", compactions)
+	if err := os.WriteFile(filepath.Join(w.piCfg.StateDir, "session.jsonl"), []byte(session), 0o600); err != nil {
+		t.Fatal(err)
 	}
 }
 
